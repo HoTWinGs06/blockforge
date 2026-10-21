@@ -105,12 +105,26 @@ export class Game {
    *
    * The shape is the contract's ItemStack, and the ids are the contract's
    * own.
+   *
+   * ALL FOUR timber-tier tools, because the contract's tool rule is by KIND
+   * and not by tier: canBreak() returns true only when the tool's kind is
+   * the kind the block needs. A mattock alone is not enough - the ground
+   * the player stands on is clay, and clay needs a TROWEL; timber and
+   * foliage need a BILLHOOK; slate and rubble need a MATTOCK; crafted
+   * blocks need a MAUL. With only a mattock the player could not mine the
+   * ground under their own feet, which is exactly what the operator
+   * reported: "no tools yet". The timber tier is the entry tier; better
+   * tools are the crafting chain (T81, T82, T84).
    */
   private readonly inventory: ItemStack[] = [
     { id: "mattock_timber", count: 1, durability: 60 },
+    { id: "trowel_timber", count: 1, durability: 60 },
+    { id: "billhook_timber", count: 1, durability: 60 },
+    { id: "maul_timber", count: 1, durability: 60 },
     { id: "loam", count: 16 },
     { id: "timber", count: 16 },
     { id: "rubble", count: 16 },
+    { id: "sand", count: 16 },
   ];
   /** True while the player is holding the break button. */
   private breaking = false;
