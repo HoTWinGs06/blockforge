@@ -24,6 +24,7 @@ import {
   blockIndex,
   chunkKeyFromString,
   chunkKeyToString,
+  seasonAt,
 } from "./constants.js";
 import { fbm2, valueNoise2, valueNoise3 } from "./noise.js";
 
@@ -521,11 +522,32 @@ export class World {
     return (h >>> 0).toString(16).padStart(8, "0");
   }
 
+  /**
+   * Ticks elapsed since this world was created.
+   *
+   * DETERMINISM: the day phase and the season are DERIVED from this counter,
+   * never from the wall clock. Nothing in src/core/ may call Date.now() or
+   * performance.now() to work out the time of day - that would make the
+   * world depend on when it was generated and break the byte-identical
+   * guarantee that the same seed gives the same world.
+   */
+  tick = 0;
+
+  /** Advance the world's clock by a number of ticks. */
+  advanceTicks(ticks: number): void {
+    this.tick += ticks;
+  }
+
   /** A serialisable snapshot of the loaded chunks. */
   snapshot(): WorldSnapshot {
     return {
       schemaVersion: SAVE_SCHEMA_VERSION,
       seed: this.seed,
+      // The season and the tick are part of the saved state, so a world saved
+      // in one season regenerates in that same season rather than wherever
+      // the wall clock happens to be.
+      season: seasonAt(this.tick),
+      tick: this.tick,
       chunks: this.loadedChunks().map((chunk) => ({
         key: chunk.key,
         blocks: chunk.blocks.slice(),
@@ -536,6 +558,8 @@ export class World {
   /** Rebuild a world from a snapshot. */
   static fromSnapshot(snapshot: WorldSnapshot): World {
     const world = new World(snapshot.seed);
+    // Restore the clock so the season and day phase continue where they were.
+    world.tick = snapshot.tick;
     for (const chunk of snapshot.chunks) {
       world.chunks.set(chunkKeyToString(chunk.key), {
         key: chunk.key,

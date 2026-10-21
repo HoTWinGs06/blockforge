@@ -216,6 +216,14 @@ export interface ChunkSnapshot {
 export interface WorldSnapshot {
   readonly schemaVersion: number;
   readonly seed: number;
+  /**
+   * The season the world was saved in. A world saved in one season must
+   * regenerate in that same season, so this is part of the saved state and
+   * not something re-derived from the wall clock.
+   */
+  readonly season: Season;
+  /** Ticks elapsed since the world was created. Drives the day phase. */
+  readonly tick: number;
   readonly chunks: readonly ChunkSnapshot[];
 }
 
@@ -380,4 +388,125 @@ export interface BlockEditPayload {
   readonly y: number;
   readonly z: number;
   readonly block: BlockId;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Break hardness
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seconds to break a block with a bare hand, per block kind.
+ *
+ * FROZEN alongside the rest of the contract: the table lives in
+ * `constants.ts` as `BREAK_TIME_SECONDS` and every block has its own value, so
+ * no two blocks break at the same rate. Tools scale these numbers; the
+ * contract only fixes the bare-hand baseline.
+ */
+export type BreakSeconds = number;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Items
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Identifier of an item. Block items use the block's name. */
+export type ItemId = string;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Time of day and seasons
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The four phases of a day.
+ *
+ * DETERMINISM: phases are derived from a TICK COUNT, never from the wall
+ * clock. Nothing in `src/core/` may call `Date.now()` or `performance.now()`
+ * to work out the time of day - that would make the world depend on when it
+ * was generated and break the byte-identical guarantee. The same applies to
+ * seasons. A world is a pure function of (seed, state, tick).
+ */
+export type DayPhase = "dawn" | "day" | "dusk" | "night";
+
+/**
+ * The four seasons.
+ *
+ * DETERMINISM: like the day phase, a season is a function of the tick
+ * counter, never of the wall clock. `WorldSnapshot` carries the season so a
+ * world saved in one season regenerates in that same season.
+ *
+ * Seasons start VISUAL - they change the palette, foliage and cover, not the
+ * terrain. A season that changed terrain generation would make the world hash
+ * depend on the season as well as the seed, which is a much larger change to
+ * the determinism contract and to every recorded world hash.
+ */
+export type Season = "thaw" | "green" | "harvest" | "frost";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mobs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mob kinds. Original names, not the well-known ones.
+ *
+ * Passive mobs wander and flee; hostile mobs hunt the player. Which kinds
+ * spawn where, and how often, is GAMEPLAY's decision - the contract only
+ * fixes the identifiers.
+ */
+export type MobKind =
+  | "grazer"
+  | "flutter"
+  | "shellback"
+  | "lurker"
+  | "snarler";
+
+/** What a mob is currently doing. */
+export type MobStateKind =
+  | "idle"
+  | "wander"
+  | "graze"
+  | "flee"
+  | "chase"
+  | "attack"
+  | "dead";
+
+/**
+ * A mob's full state.
+ *
+ * DETERMINISM: mob AI must be a pure function of (world state, tick). No
+ * mob may read the clock, and a mob's decisions must not depend on the order
+ * in which mobs happen to be updated.
+ */
+export interface MobState {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly position: Vec3;
+  readonly velocity: Vec3;
+  readonly yaw: number;
+  readonly health: number;
+  readonly maxHealth: number;
+  readonly state: MobStateKind;
+  /** Chunk the mob considers home, for wandering. */
+  readonly home: ChunkKey;
+  /** Ticks until the mob next re-evaluates. */
+  readonly aiTimer: number;
+  /** Ticks since the mob spawned. */
+  readonly age: number;
+  readonly onGround: boolean;
+  /** Ticks the mob survives after death, before it is removed. */
+  readonly deathTimer: number;
+}
+
+/**
+ * A mob as stored in a save file.
+ *
+ * M3 extends `WorldSnapshot` with the entities it owns; the contract for the
+ * mob state itself is frozen here.
+ */
+export interface MobSnapshot {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly health: number;
+  readonly state: MobStateKind;
 }

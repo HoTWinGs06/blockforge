@@ -21,6 +21,8 @@
  */
 
 /** Blocks along X in a chunk. */
+import type { DayPhase, Season } from "./types.js";
+
 export const CHUNK_SIZE_X = 16;
 /** Blocks along Y in a chunk (full world height). */
 export const CHUNK_SIZE_Y = 256;
@@ -124,3 +126,89 @@ function requireSafeInteger(value: number, name: string): number {
  * to the on-disk format; readers must tolerate older versions.
  */
 export const SAVE_SCHEMA_VERSION = 1;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Break times (frozen)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seconds to break each block with a bare hand.
+ *
+ * Every block has its own value - no two break at the same rate - and the
+ * table is FROZEN. A tool multiplies or divides these numbers; the contract
+ * fixes only the baseline. Values are tuned so the common blocks near spawn
+ * break in well under a second and the rare ones are a real commitment.
+ */
+export const BREAK_TIME_SECONDS: Readonly<Record<string, number>> = Object.freeze({
+  air: 0,
+  foliage: 0.1,
+  emberlamp: 0.12,
+  crystpane: 0.2,
+  tidewater: 0.25,
+  emberflow: 0.3,
+  sand: 0.35,
+  gravel: 0.4,
+  clay: 0.45,
+  regolith: 0.55,
+  loam: 0.6,
+  millplank: 0.7,
+  timber: 0.9,
+  masonry: 1.1,
+  rubble: 1.3,
+  slate: 1.7,
+  smeltforge: 2.2,
+  craftbench: 2.5,
+  anthracite: 3.2,
+  ironveil: 4.0,
+  gildenseam: 5.0,
+  lumencrystal: 6.5,
+  voidstone: 9.0,
+});
+
+/** Seconds to break a block with a bare hand. Unknown kinds take the slowest. */
+export function breakSeconds(id: string): number {
+  const seconds = BREAK_TIME_SECONDS[id];
+  return seconds === undefined ? 9.0 : seconds;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Day and season (frozen)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ticks in one full day. At 20 ticks per second, a day is 12 minutes. */
+export const TICKS_PER_DAY = 14400;
+
+/** Ticks in one full season. A year is four of these. */
+export const TICKS_PER_SEASON = 57600;
+
+/** The four seasons, in order. */
+export const SEASONS: readonly Season[] = Object.freeze([
+  "thaw",
+  "green",
+  "harvest",
+  "frost",
+]);
+
+/** The four phases of a day, in order. */
+export const DAY_PHASES: readonly DayPhase[] = Object.freeze([
+  "dawn",
+  "day",
+  "dusk",
+  "night",
+]);
+
+/**
+ * The season at a given tick. A pure function of the tick - never the clock.
+ */
+export function seasonAt(tick: number): Season {
+  const index = Math.floor(tick / TICKS_PER_SEASON) % SEASONS.length;
+  return SEASONS[index] as Season;
+}
+
+/**
+ * The day phase at a given tick. A pure function of the tick - never the clock.
+ */
+export function dayPhaseAt(tick: number): DayPhase {
+  const index = Math.floor(tick / (TICKS_PER_DAY / DAY_PHASES.length)) % DAY_PHASES.length;
+  return DAY_PHASES[index] as DayPhase;
+}
