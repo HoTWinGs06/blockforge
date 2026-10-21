@@ -14,7 +14,6 @@ import {
   ALL_BLOCK_IDS,
   BlockId,
   type ChunkKey,
-  type ItemStack,
   type PlayerState,
   type ToolSpec,
   type Vec3,
@@ -28,6 +27,7 @@ import {
   type SolidWorld,
 } from "./core/physics.js";
 import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
+import { GameplaySession } from "./gameplay/index.js";
 import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
 
 /**
@@ -55,8 +55,6 @@ export interface EngineBridge {
   updateView?(playerX: number, playerZ: number, renderer: WorldRenderer): void;
 }
 
-/** How many hotbar slots the HUD shows. */
-const HOTBAR_SLOTS = 9;
 const EYE_HEIGHT = 1.62;
 /**
  * Walking speed, in blocks per second.
@@ -93,7 +91,7 @@ export class Game {
   private selectedSlot = 0;
 
   /**
-   * What the player is carrying.
+   * What the player is carrying, and what is lying on the ground.
    *
    * The player starts with a TIMBER MATTOCK and some blocks. That is not a
    * convenience: the contract froze a tool rule, so a player with an empty
@@ -102,9 +100,6 @@ export class Game {
    * tools or build them". A basic tool in the starting kit is what makes
    * the world playable at all; the crafting chain that makes BETTER tools
    * is the gameplay role's work and is tracked on the board.
-   *
-   * The shape is the contract's ItemStack, and the ids are the contract's
-   * own.
    *
    * ALL FOUR timber-tier tools, because the contract's tool rule is by KIND
    * and not by tier: canBreak() returns true only when the tool's kind is
@@ -115,17 +110,13 @@ export class Game {
    * ground under their own feet, which is exactly what the operator
    * reported: "no tools yet". The timber tier is the entry tier; better
    * tools are the crafting chain (T81, T82, T84).
+   *
+   * T80: the inventory is a real thing now. Breaking a block LEAVES AN ITEM
+   * on the ground, the player walks over it to collect it, and the hotbar
+   * counts what they carry - the operator reported "not able to collect
+   * broken blocks no inventory", and both halves are in this session.
    */
-  private readonly inventory: ItemStack[] = [
-    { id: "mattock_timber", count: 1, durability: 60 },
-    { id: "trowel_timber", count: 1, durability: 60 },
-    { id: "billhook_timber", count: 1, durability: 60 },
-    { id: "maul_timber", count: 1, durability: 60 },
-    { id: "loam", count: 16 },
-    { id: "timber", count: 16 },
-    { id: "rubble", count: 16 },
-    { id: "sand", count: 16 },
-  ];
+  private readonly session = new GameplaySession();
   /** True while the player is holding the break button. */
   private breaking = false;
   /** The in-progress break, or null. */
@@ -204,6 +195,11 @@ export class Game {
       this.applyMove(dt);
     }
     this.applyGravity(dt);
+
+    // T80: collect whatever the player walked over. The session owns the
+    // inventory and the items on the ground; the loop just tells it the
+    // player moved and how long has passed.
+    this.session.update(dt, this.position);
 
     this.updateBreaking(dt);
     this.renderer.applyPlayer(this.playerState);
@@ -382,6 +378,11 @@ export class Game {
       return;
     }
     this.engine.setBlock(cell.x, cell.y, cell.z, block);
+    // T80: placing a block TAKES IT OUT OF THE PACK. Before this, the
+    // hotbar was a decoration: the player could place blocks forever and
+    // the count never moved. Now the count is the truth, and a player who
+    // has run out of a block cannot place any more of it.
+    this.session.consumeHeld();
     this.sound.play("place");
     this.engine.syncChunk(chunkKeyOf(cell.x, cell.y, cell.z), this.renderer);
   }
@@ -413,7 +414,14 @@ export class Game {
     }
     state.elapsed += dt;
     if (state.elapsed >= state.total) {
+      const broken = this.engine.blockAt(hit.x, hit.y, hit.z);
       this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Air);
+      // T80: the block does not simply vanish - it LEAVES AN ITEM on the
+      // ground, and the player collects it by walking over it. The drop
+      // table decides what it leaves, and the wrong-tool rule is applied
+      // there: a block broken with the wrong tool drops NOTHING, which is
+      // what makes tools worth crafting.
+      this.session.breakBlock(broken, this.heldTool(), hit.x, hit.y, hit.z, this.solidWorld());
       this.sound.play("break");
       this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
       // The hand swings when the block breaks.
@@ -463,23 +471,27 @@ export class Game {
     } else {
       this.renderer.hideHighlight();
     }
-    // The hand holds the selected hotbar item. The ITEMS are M3 content and
-    // the hotbar is still empty, so the hand holds rubble - but the wiring
-    // is real, and when the inventory lands the hand will pick up whatever
-    // the player has selected.
-    this.renderer.setHeldBlock(BlockId.Rubble);
+    // The hand holds the selected hotbar item. When the player selects a
+    // block, the hand shows that block's texture; when they select a tool
+    // there is no block texture for it yet, so the hand keeps the last
+    // block it had.
+    const heldBlock = this.heldBlockId();
+    if (heldBlock !== null) {
+      this.renderer.setHeldBlock(heldBlock);
+    }
 
     this.hud.update({
       targetedBlock: hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null,
       targetedPosition: hit,
-      // Nine slots, always. The ITEMS are M3 (GAMEPLAY) content and are empty
-      // for now, but the hotbar SHELL is M1: the operator reported "no
-      // inventory bar", and a bar made of nothing is not a bar. Empty slots
-      // still read as slots.
-      hotbar: Array.from({ length: HOTBAR_SLOTS }, (_, i) => {
-        const item = this.inventory[i];
-        return item ? { id: item.id, count: item.count } : { id: "", count: 0 };
-      }),
+      // Nine slots, always. The hotbar SHELL is M1: the operator reported
+      // "no inventory bar", and a bar made of nothing is not a bar. The
+      // ITEMS are real now (T80): the slots carry what the player actually
+      // holds, with the count of each.
+      hotbar: this.session.carried.slots.map((item) => ({
+        id: item.id,
+        count: item.count,
+        ...(item.durability === undefined ? {} : { durability: item.durability }),
+      })),
       selectedSlot: this.selectedSlot,
       health: this.health,
       hunger: this.hunger,
@@ -502,15 +514,6 @@ export class Game {
   }
 
   /**
-   * The tool the player is holding, or null for bare hands.
-   *
-   * The INVENTORY is M3 content and does not exist yet, so this is always
-   * null - which means only the blocks the contract lets bare hands break
-   * are breakable. That is the honest state: the tool rule is real, and the
-   * tools to satisfy it have not been crafted yet. When the inventory lands,
-   * this reads the selected hotbar slot.
-   */
-  /**
    * The tool in the selected hotbar slot, or null.
    *
    * This returned null unconditionally, which meant the player could never
@@ -520,8 +523,8 @@ export class Game {
    * is no way to get tools".
    */
   private heldTool(): ToolSpec | null {
-    const item = this.inventory[this.selectedSlot];
-    if (!item) {
+    const item = this.session.held();
+    if (item === null) {
       return null;
     }
     return toolSpec(item.id) ?? null;
@@ -535,8 +538,8 @@ export class Game {
    * (loam, timber, rubble) for a block.
    */
   private heldBlockId(): BlockId | null {
-    const item = this.inventory[this.selectedSlot];
-    if (!item) {
+    const item = this.session.held();
+    if (item === null) {
       return null;
     }
     return ALL_BLOCK_IDS.includes(item.id as BlockId) ? (item.id as BlockId) : null;
@@ -598,6 +601,7 @@ export class Game {
       // Number keys select a hotbar slot.
       if (/^Digit[1-9]$/.test(event.code)) {
         this.selectedSlot = Number(event.code.slice(-1)) - 1;
+        this.session.select(this.selectedSlot);
         return;
       }
       this.keys.add(event.code);
@@ -681,6 +685,9 @@ export class Game {
         const at = this.pickBlock();
         return at ? this.engine.blockAt(at.x, at.y, at.z) : null;
       },
+      carried: () =>
+        this.session.carried.slots.map((slot) => ({ id: slot.id, count: slot.count })),
+      dropped: () => this.session.droppedItems().length,
       setBreaking: (holding: boolean): void => {
         this.breaking = holding;
         if (holding) {
@@ -743,6 +750,16 @@ export interface GameHandle {
    * the wrong answer. This is the real id.
    */
   targetedKind(): BlockId | null;
+  /**
+   * What the player is carrying, as the hotbar shows it.
+   *
+   * This is player-facing state - the same thing the hotbar draws - so it
+   * is a fair thing for the browser tests to read. It is how a test checks
+   * that a broken block really became a collectable item.
+   */
+  carried(): readonly { id: string; count: number }[];
+  /** How many items are lying on the ground right now. */
+  dropped(): number;
   /** Start or stop holding the break button. */
   setBreaking(holding: boolean): void;
   /** How far through the current break the player is, 0..1, or null. */

@@ -1,0 +1,42 @@
+/**
+ * BlockForge — the gameplay layer's public surface.
+ *
+ * OWNERSHIP: GAMEPLAY. Pure logic: no DOM, no clock, no randomness.
+ *
+ * The game loop (src/main.ts) talks to this and nothing else in the layer,
+ * so the internals can move without breaking the caller.
+ *
+ * NOTE: src/core/index.ts is the ARCHITECT's core barrel and does not
+ * re-export this layer, because src/core/ must not depend on src/gameplay/
+ * (the layering rule in docs/ARCHITECTURE.md). Import the gameplay layer
+ * as "./gameplay/index.js" from the app shell.
+ */
+
+export { GameplaySession, TICKS_PER_SECOND } from "./session.js";
+export type { DroppedItemView } from "./session.js";
+export {
+  addItem,
+  countOf,
+  createInventory,
+  heldItem,
+  isEmpty,
+  removeItem,
+  selectSlot,
+  EMPTY_STACK,
+  HOTBAR_SLOTS,
+  MAX_STACK,
+} from "./inventory.js";
+export type { AddResult } from "./inventory.js";
+export { dropFor } from "./drops.js";
+export {
+  collectItems,
+  isWithinReach,
+  itemPosition,
+  spawnItem,
+  ITEM_SIZE,
+  ITEM_LIFETIME_TICKS,
+  PICKUP_DELAY_TICKS,
+  PICKUP_RADIUS,
+  SETTLE_TICKS,
+} from "./itemEntities.js";
+export type { CollectResult, ItemEntity, SolidProbe } from "./itemEntities.js";
