@@ -28,6 +28,7 @@ import {
 } from "./core/physics.js";
 import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
 import { GameplaySession } from "./gameplay/index.js";
+import type { Activity } from "./gameplay/index.js";
 import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
 
 /**
@@ -72,6 +73,15 @@ const WALK_SPEED = 3.2;
 const SPRINT_MULTIPLIER = 1.8;
 const JUMP_SPEED = 8.0;
 const REACH = 6.0;
+
+/**
+ * Where the player starts, and where they wake up after dying.
+ *
+ * High in the air, so the world is visible on the first frame, and the
+ * player falls onto the terrain. The drop into the world is not a fall
+ * the player took, so it does not hurt them.
+ */
+const SPAWN_POSITION: Vec3 = { x: 0.5, y: 90, z: 0.5 };
 
 /** The running game. */
 export class Game {
@@ -121,8 +131,6 @@ export class Game {
   private breaking = false;
   /** The in-progress break, or null. */
   private breakState: { key: string; elapsed: number; total: number } | null = null;
-  private health = 20;
-  private hunger = 20;
   private message: string | null = null;
   private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
@@ -155,8 +163,11 @@ export class Game {
       yaw: this.yaw,
       pitch: this.pitch,
       onGround: this.onGround,
-      health: 20,
-      hunger: 20,
+      // T83: the real numbers, not two decorative twenties. The session
+      // owns the survival state; the HUD and the renderer read it from
+      // here.
+      health: this.session.health,
+      hunger: this.session.hunger,
     };
   }
 
@@ -197,9 +208,14 @@ export class Game {
     this.applyGravity(dt);
 
     // T80: collect whatever the player walked over. The session owns the
-    // inventory and the items on the ground; the loop just tells it the
-    // player moved and how long has passed.
-    this.session.update(dt, this.position);
+    // inventory, the items on the ground and the player's survival state;
+    // the loop just tells it the player moved and how long has passed.
+    //
+    // T83: the same call advances the survival rules - hunger drains on
+    // the tick counter, faster while the player is moving, and a fall
+    // hurts when the player lands.
+    this.session.update(dt, this.position, this.activity(), this.onGround);
+    this.checkDeath();
 
     this.updateBreaking(dt);
     this.renderer.applyPlayer(this.playerState);
@@ -430,6 +446,65 @@ export class Game {
     }
   }
 
+  /**
+   * How hard the player is working, which is how fast hunger drains.
+   *
+   * Sprinting burns the most, walking some, standing still least. The
+   * survival rules are what turn this into a drain rate.
+   */
+  private activity(): Activity {
+    if (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")) {
+      return "sprinting";
+    }
+    return this.horizontalSpeed() > 0.1 ? "moving" : "idle";
+  }
+
+  /**
+   * The player died: put them back on their feet.
+   *
+   * The world is NOT reset. The blocks the player broke stay broken, the
+   * items they dropped stay where they fell, and the player comes back
+   * at the top of the world with a full belly. Only the player is put
+   * back together.
+   */
+  private checkDeath(): void {
+    if (!this.session.dead) {
+      return;
+    }
+    this.session.respawn();
+    this.position = { ...SPAWN_POSITION };
+    this.velocity = { x: 0, y: 0, z: 0 };
+    this.onGround = false;
+    this.message = "You died. You wake at the top of the world, hungry and whole.";
+  }
+
+  /**
+   * Eat the food in hand.
+   *
+   * The key is the shell's business; the rule is the session's: the item
+   * in hand has to be food, and the player has to be hungry.
+   */
+  private eat(): void {
+    // The name is read BEFORE the meal: eating takes the item out of the
+    // pack, so the hand may be empty by the time the message is written.
+    const name = this.session.held()?.id ?? "";
+    const outcome = this.session.eat();
+    if (outcome.ate) {
+      this.message = `You eat the ${blockLabel(name as BlockId)} (+${outcome.restored} hunger)`;
+      this.sound.play("place");
+      return;
+    }
+    this.message =
+      outcome.reason === "not-hungry"
+        ? "You are not hungry"
+        : outcome.reason === "not-food"
+          ? "That is not food"
+          : outcome.reason === "dead"
+            ? "You are dead"
+            : "You have nothing in your hand";
+    this.sound.play("deny");
+  }
+
   /** Ray-march from the eye along the look direction and return the first solid block. */
   /**
    * The block the player is aiming at, WITH the face it was hit on.
@@ -493,8 +568,8 @@ export class Game {
         ...(item.durability === undefined ? {} : { durability: item.durability }),
       })),
       selectedSlot: this.selectedSlot,
-      health: this.health,
-      hunger: this.hunger,
+      health: this.session.health,
+      hunger: this.session.hunger,
       message: this.message,
       breakProgress: this.breakProgress(),
       breakingBlock: this.breakBlock(),
@@ -596,6 +671,11 @@ export class Game {
       }
       if (event.code === "KeyR") {
         this.act(true);
+        return;
+      }
+      // T83: eat what is in hand.
+      if (event.code === "KeyG") {
+        this.eat();
         return;
       }
       // Number keys select a hotbar slot.

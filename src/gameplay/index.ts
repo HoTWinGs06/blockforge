@@ -13,7 +13,27 @@
  */
 
 export { GameplaySession, TICKS_PER_SECOND } from "./session.js";
-export type { BreakOutcome, DroppedItemView } from "./session.js";
+export type { BreakOutcome, DroppedItemView, EatOutcome } from "./session.js";
+export {
+  advanceSurvival,
+  createSurvival,
+  damageSurvival,
+  eatSurvival,
+  fallDamage,
+  foodValue,
+  respawnSurvival,
+  ACTIVITY_DRAIN,
+  FOOD,
+  HUNGER_TICKS_PER_POINT,
+  MOB_DAMAGE,
+  MAX_HEALTH,
+  MAX_HUNGER,
+  REGEN_HUNGER,
+  REGEN_TICKS,
+  SAFE_FALL_BLOCKS,
+  STARVATION_TICKS_PER_DAMAGE,
+} from "./survival.js";
+export type { Activity, SurvivalState } from "./survival.js";
 export {
   addItem,
   countOf,

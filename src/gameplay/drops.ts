@@ -15,9 +15,8 @@
  * with the wrong tool leaves NOTHING. The drop table enforces it anyway,
  * because a drop that ignored the tool rule would hand out free ore.
  *
- * SOME BLOCKS LEAVE NOTHING AT ALL: the two liquids, the world floor, and
- * the tree canopy. There is no bucket and there is no way to put the floor
- * back, and a leaf is not a thing you carry.
+ * SOME BLOCKS LEAVE NOTHING AT ALL: the two liquids and the world floor.
+ * There is no bucket and there is no way to put the floor back.
  */
 
 import { canBreak } from "../core/constants.js";
@@ -30,7 +29,6 @@ const LEAVES_NOTHING: ReadonlySet<BlockId> = new Set([
   BlockId.Tidewater,
   BlockId.Emberflow,
   BlockId.Voidstone,
-  BlockId.Foliage,
 ]);
 
 /**
@@ -39,10 +37,19 @@ const LEAVES_NOTHING: ReadonlySet<BlockId> = new Set([
  * `tool` is the tool the break was made with, or null for bare hands. The
  * wrong-tool rule is applied here: a block that needs a tool and was not
  * broken with one drops nothing at all.
+ *
+ * THE CANOPY CARRIES FOOD. A tree's leaves are not a thing the player
+ * carries, but something grows in them: a wildfig. That is the player's
+ * supply of food until the mobs land, and it is why the canopy needs a
+ * billhook - the fruit is harvested with the same tool you fell the tree
+ * with.
  */
 export function dropFor(block: BlockId, tool: ToolSpec | null): readonly ItemStack[] {
   if (!canBreak(block, tool)) {
     return [];
+  }
+  if (block === BlockId.Foliage) {
+    return [{ id: "wildfig", count: 1 }];
   }
   if (LEAVES_NOTHING.has(block)) {
     return [];
