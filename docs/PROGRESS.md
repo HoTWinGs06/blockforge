@@ -398,3 +398,120 @@ Full detail for every task is on the board. Summary:
   - `npm run lint`: 0 errors / 0 warnings.
   - `npm run typecheck`: clean (`tsc --noEmit` exit 0).
 - **Handoff Target:** `ENGINE` (`hermes-linux` on T26) — build `src/core/rng.ts` and the chunk generator / greedy mesher against these test specs.
+
+---
+
+## 10. G1 CLOSE-OUT — TEST AUTHOR (M1, commit `df1b5ec`)
+
+**Agent:** TEST AUTHOR (`testauthor`, pane `w1:p4`) · **Task:** T27
+**Branch:** `feature/test-author/m1` · **Commit:** `df1b5ec`
+**Base:** `feature/engine/m1` @ `e29fc98` (merged locally — this repo has no
+`origin` remote; the branch is shared through the local worktrees).
+
+### 10.1 The gate, read back from the tool
+
+```
+npm run coverage -> exit 0
+
+Statements   : 99.52% ( 634/637 )
+Branches     : 95.29% ( 243/255 )
+Functions    : 100%   ( 87/87  )
+Lines        : 99.49% ( 587/590 )
+```
+
+**The 85% floor was not moved.** `vitest.config.ts` is untouched; the
+thresholds are still `lines: 85, functions: 85, branches: 85, statements: 85`.
+The gate went green because the tests caught up with the code, which is the
+only way it is allowed to go green.
+
+| file | stmts before | stmts after | branch before | branch after |
+|---|---|---|---|---|
+| `src/core/raycast.ts` | 0.00% | 98.11% | 0.00% | 100% |
+| `src/core/noise.ts` | 1.81% | 100% | 100% | 100% |
+| `src/core/physics.ts` | 5.68% | 100% | 0.00% | 92.86% |
+| `src/core/world.ts` | 17.47% | 99.02% | 7.77% | 96.66% |
+| `src/core/rng.ts` | 82.85% | 100% | 62.50% | 100% |
+| `src/core/meshing.ts` | 86.09% | 100% | 61.29% | 85.48% |
+| `src/core/constants.ts` | 100% | 100% | 100% | 100% |
+| `src/core/index.ts` | 100% | 100% | 100% | 100% |
+| `src/core/types.ts` | 100% | 100% | 100% | 100% |
+| **TOTAL** | **39.24%** | **99.52%** | **26.27%** | **95.29%** |
+
+Suite: **11 files, 181 tests — 176 passed, 5 expected fail**, 0 failures.
+`npm test` exit 0 · `npm run lint` exit 0 · `npm run typecheck` exit 0.
+
+### 10.2 Files
+
+| file | what it pins |
+|---|---|
+| `tests/raycast.test.ts` (new) | DDA hit cell, face normal points back at the ray on all six axes, placement cell is the empty neighbour, miss returns null, edge tie-break is stable, start-inside terminates, `maxDistance` bounds the search. |
+| `tests/physics.test.ts` (new) | Collision box centred on the feet, `aabbIntersects` touch-vs-overlap, falling body rests exactly on the floor top (`y === 1`), body stopped flush against a wall in all four directions, head-bump clearance, zero `dt` is a no-op, body pushed clear of a wall it started inside. |
+| `tests/noise.test.ts` (new) | `valueNoise2`/`valueNoise3` determinism, seed sensitivity, `[0, 1)` range, C2 continuity across a lattice boundary, `fbm2` determinism and range. |
+| `tests/world.test.ts` (new) | `generateChunk` byte-identical for the same seed+key, different for a different seed or key, order-independent, heightmap continuous across a chunk border, world hash stable and seed-sensitive, chunk cache/unload, snapshot round-trip, block-ordinal inverses. |
+| `tests/rng.test.ts` (extended) | Both `nextInt` bounds and the three `RangeError` paths, `nextUint32` covers the full uint32 range, `getState`/`setState` round-trip, `createRngFromState` restores a stream exactly. |
+| `tests/meshing_spec.test.ts` (extended) | Stable byte-identical vertex order, one `blocks` entry per triangle, no face for air, **no face across a section boundary**, west/east/north/south neighbour margins, greedy merge of a 4×1 slab into one quad, winding agrees with the normal. |
+| `tests/lib/purity-scan.ts` (new) | The purity scanner, built on the TypeScript AST. |
+| `tests/purity.test.ts` (rewritten) | The guard plus 23 meta-tests proving it can still fail. |
+
+### 10.3 The purity guard is no longer blind (T48 / T49 / T50 closed)
+
+The old guard was a regex sweep over comment-stripped text, and RED-TEAM
+found three holes in it. All three are closed, and the guard now has
+**meta-tests that replay every known-bad form against the scanner** — so a
+future weakening goes red before the real files do.
+
+| id | hole | fix |
+|---|---|---|
+| T1 | `readdirSync(src/core).filter(.ts)` is not recursive, so `src/core/world/`, `meshing/`, `physics/`, `raycast/` and `noise/` were never scanned — nearly all the real code. | The file list is a **recursive walk** (`listTypeScriptFiles`), and the test proves it against a real nested temp tree. |
+| T2 | `stripComments()` deleted from `//` to end of line without knowing the `//` was inside a string, so one URL on a line silently deleted a real `Math.random()` with it. | The scanner is built on the **TypeScript AST**, so comments and strings are structurally distinct. There is no comment-stripping step to get wrong. |
+| T3 | `Math . random()`, `require("three")` and `await import("three")` all slipped past the regexes. | The AST sees a call as a call whatever the spacing, and all four import spellings (`from`, `import`, `require`, dynamic `import`) are handled by one code path. |
+
+The guard also got **stricter, not looser**: it now flags DOM globals in
+type position and locals that shadow a DOM global name is not a false
+positive, while `{ document: 1 }`, `foo.document` and a string literal
+containing `"Date.now()"` are correctly not flagged.
+
+### 10.4 The three "fixed" findings — re-verified, not taken on trust
+
+| id | claim | measured result | how it is pinned |
+|---|---|---|---|
+| **E5** (vacuous hash) | engine says fixed | **FIXED** — `hash()` mixes the seed in first, so different seeds differ even with **no chunks loaded** (the exact case E5 was filed against). | Plain `it` in `tests/world.test.ts`. Passes, and stays passing. |
+| **E1** (fbm2 NaN) | engine says fixed | **NOT FIXED** — `fbm2` still computes `sum / norm`; with `octaves <= 0` the loop never runs, both are 0, and the result is `NaN`. | `it.fails` in `tests/noise.test.ts`, inner assertion is the FIXED behaviour. Flips RED the moment the engine fixes it. |
+| **E2** (fork order-dependence) | engine says fixed | **NOT FIXED** — `fork()` still derives the child from `this.state` (the parent's *current* state), not from the seed, so the same label forked at a different point in the parent's life gives a different stream. | `it.fails` in `tests/rng.test.ts`, inner assertion is the FIXED behaviour. Flips RED the moment the engine fixes it. |
+
+The engine's own handoff note claimed all three were fixed. Two were not.
+Both are now pinned so that the fix cannot land without the test noticing.
+
+### 10.5 New finding — physics tunnels through geometry (filed to the board)
+
+`moveWithCollisions` resolves collisions by testing the box at the
+**destination** only; the swept path from start to destination is never
+examined. A body that moves further than one block in a single step
+therefore passes clean through a one-block-thick wall or floor.
+
+This is not theoretical: the player falls at up to `TERMINAL_VELOCITY`
+(60) blocks per second, so at any frame rate below 60 fps a falling body
+moves 2+ blocks per step and goes straight through the ground.
+
+Reproduced: `stepPhysics` from `y=50` with `dt=0.1` ends at `y=-3.2`
+instead of resting at `y=1`. A body stepping 2 blocks into a two-block
+wall ends up **embedded inside it** (its AABB overlaps a solid block),
+which is worse than tunnelling.
+
+Pinned as `it.fails` in `tests/physics.test.ts`, with a control test at
+`dt=1/60` that passes both before and after a fix. **Owner: ENGINE
+(`hermes-linux`).** Fix direction: sub-step the move, or sweep the box
+along the path.
+
+### 10.6 Handoff
+
+- **ENGINE (`hermes-linux`)** — T44 (E1) and T45 (E2) are still open
+  against the current tree; this suite pins both so a fix is visible
+  immediately. The physics tunnelling finding is new and needs a fix.
+- **RED-TEAM (`opencode`)** — the three `it.fails` in `tests/redteam/`
+  for T48/T49/T50 now have a counterpart in `tests/purity.test.ts`; when
+  the engine closes T44/T45, the `it.fails` there (and here) must be
+  converted to plain `it` asserting the fixed behaviour.
+- **Coordinator (`hermes-win`)** — G1 now passes. G5 (lint + typecheck)
+  is clean. G6 is unaffected by this change; the determinism harness in
+  `tests/determinism.test.ts` still passes.
