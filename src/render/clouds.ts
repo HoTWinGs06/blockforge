@@ -34,17 +34,23 @@ const CELL_RADIUS = 1;
 /**
  * The altitude band the clouds drift in.
  *
- * The player stands at about y=68, so the deck is 20 to 32 blocks above their
- * head. It is deliberately ABOVE the world's fog far plane (60): the cloud
+ * THE PLAYER SPAWNS AT y=90 AND FALLS TO THE GROUND, so the deck has to sit
+ * clearly above 90 or the player starts INSIDE the clouds. It used to be 88
+ * to 100, which put the spawn point in the middle of the deck - and with
+ * the sprites drawn without a depth test they painted over the whole world.
+ * That is exactly what the operator reported: "the cloud is on the face of
+ * the player instead of the sky".
+ *
+ * The deck is well above the player's head (about y=69 on the ground). It is deliberately ABOVE the world's fog far plane (60): the cloud
  * material has fog DISABLED and does its own distance fade, so the deck is
  * not swallowed by the scene fog. See the material in populate().
  */
-const ALTITUDE_MIN = 88;
-const ALTITUDE_MAX = 100;
+const ALTITUDE_MIN = 132;
+const ALTITUDE_MAX = 156;
 
 /** How wide one cloud is, in blocks. */
-const WIDTH_MIN = 18;
-const WIDTH_MAX = 34;
+const WIDTH_MIN = 14;
+const WIDTH_MAX = 24;
 
 /** How far a cloud wanders from its anchor, and how long a wander takes. */
 const AMPLITUDE_MIN = 4;
@@ -162,7 +168,12 @@ export class CloudLayer {
             map: this.texture,
             transparent: true,
             depthWrite: false,
-            depthTest: false,
+            // The deck is a real thing in the world, so it is occluded by
+            // the terrain in front of it. With the depth test OFF a cloud
+            // behind a hill painted straight over the hill - and, because
+            // the player spawns inside the deck's old altitude band, over
+            // the player as well.
+            depthTest: true,
             // THE SCENE FOG MUST NOT TOUCH THE CLOUDS.
             //
             // The world's fog runs from FOG_NEAR (28) to FOG_FAR (60), and a

@@ -68,7 +68,15 @@ export function blockLabel(id: BlockId | null): string {
   if (!id) {
     return "-";
   }
-  return BLOCK_LABELS[id] ?? id;
+  const label = BLOCK_LABELS[id];
+  if (label) {
+    return label;
+  }
+  // Not a block: it is a TOOL, whose id is the contract's own
+  // (mattock_timber). Show it as words rather than as a raw id.
+  return id
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 const STYLE_ID = "blockforge-hud-style";

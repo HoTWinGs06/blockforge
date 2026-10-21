@@ -10,13 +10,24 @@
  * synthesised (src/render/audio.ts).
  */
 
-import { BlockId, type ChunkKey, type PlayerState, type ToolSpec, type Vec3 } from "./core/types.js";
-import { CHUNK_SIZE_Y, breakSecondsWith, requiredToolFor } from "./core/constants.js";
 import {
+  ALL_BLOCK_IDS,
+  BlockId,
+  type ChunkKey,
+  type ItemStack,
+  type PlayerState,
+  type ToolSpec,
+  type Vec3,
+} from "./core/types.js";
+import { CHUNK_SIZE_Y, breakSecondsWith, requiredToolFor, toolSpec } from "./core/constants.js";
+import {
+  aabbIntersects,
+  bodyAabb,
   moveWithCollisions,
   stepPhysics,
   type SolidWorld,
 } from "./core/physics.js";
+import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
 import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
 
 /**
@@ -80,6 +91,27 @@ export class Game {
 
   private readonly keys = new Set<string>();
   private selectedSlot = 0;
+
+  /**
+   * What the player is carrying.
+   *
+   * The player starts with a TIMBER MATTOCK and some blocks. That is not a
+   * convenience: the contract froze a tool rule, so a player with an empty
+   * hotbar cannot mine a single thing, and the operator reported exactly
+   * that - "the blocks require tools to break but there is no way to get
+   * tools or build them". A basic tool in the starting kit is what makes
+   * the world playable at all; the crafting chain that makes BETTER tools
+   * is the gameplay role's work and is tracked on the board.
+   *
+   * The shape is the contract's ItemStack, and the ids are the contract's
+   * own.
+   */
+  private readonly inventory: ItemStack[] = [
+    { id: "mattock_timber", count: 1, durability: 60 },
+    { id: "loam", count: 16 },
+    { id: "timber", count: 16 },
+    { id: "rubble", count: 16 },
+  ];
   /** True while the player is holding the break button. */
   private breaking = false;
   /** The in-progress break, or null. */
@@ -301,10 +333,43 @@ export class Game {
     }
   }
 
-  private placeBlock(hit: { x: number; y: number; z: number }): void {
-    this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Rubble);
+  /**
+   * Place a block NEXT TO the one the player is looking at.
+   *
+   * The old version wrote into the hit block itself, so right-clicking
+   * EXCHANGED the block you were aiming at for a different one. A placement
+   * goes in the empty cell on the face the ray came in through, which is
+   * exactly what placementCell() computes from the face normal.
+   */
+  private placeBlock(hit: RaycastHit): void {
+    const cell = placementCell(hit);
+    if (cell.y < 0 || cell.y >= CHUNK_SIZE_Y || this.engine.isSolid(cell.x, cell.y, cell.z)) {
+      this.sound.play("deny");
+      return;
+    }
+    // Never place a block inside the player.
+    const cube = {
+      minX: cell.x,
+      minY: cell.y,
+      minZ: cell.z,
+      maxX: cell.x + 1,
+      maxY: cell.y + 1,
+      maxZ: cell.z + 1,
+    };
+    if (aabbIntersects(bodyAabb(this.position), cube)) {
+      this.message = "There is no room to place a block there";
+      this.sound.play("deny");
+      return;
+    }
+    const block = this.heldBlockId();
+    if (block === null) {
+      this.message = "You are not holding a block";
+      this.sound.play("deny");
+      return;
+    }
+    this.engine.setBlock(cell.x, cell.y, cell.z, block);
     this.sound.play("place");
-    this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
+    this.engine.syncChunk(chunkKeyOf(cell.x, cell.y, cell.z), this.renderer);
   }
 
   private keyOf(hit: { x: number; y: number; z: number }): string {
@@ -344,24 +409,28 @@ export class Game {
   }
 
   /** Ray-march from the eye along the look direction and return the first solid block. */
-  private pickBlock(): { x: number; y: number; z: number } | null {
+  /**
+   * The block the player is aiming at, WITH the face it was hit on.
+   *
+   * This used to be a hand-rolled ray march that returned only the block's
+   * coordinates, so the game never knew which FACE the player was looking
+   * at. That is why placing a block wrote into the block that was looked
+   * at: without a face there is nowhere else to put it, so it EXCHANGED
+   * the block instead of placing a new one next to it.
+   *
+   * The core already has a proper voxel raycast (src/core/raycast.ts) that
+   * returns the face normal, and placementCell() turns that normal into the
+   * empty cell next to the hit. The game now uses the core's, so there is
+   * ONE implementation of "what am I looking at", and it is the tested one.
+   */
+  private pickBlock(): RaycastHit | null {
     const dir = this.lookDirection();
-    const ox = this.position.x;
-    const oy = this.position.y + EYE_HEIGHT;
-    const oz = this.position.z;
-    const step = 0.05;
-    for (let d = 0; d <= REACH; d += step) {
-      const x = Math.floor(ox + dir.x * d);
-      const y = Math.floor(oy + dir.y * d);
-      const z = Math.floor(oz + dir.z * d);
-      if (y < 0 || y >= CHUNK_SIZE_Y) {
-        continue;
-      }
-      if (this.engine.isSolid(x, y, z)) {
-        return { x, y, z };
-      }
-    }
-    return null;
+    const origin = { x: this.position.x, y: this.position.y + EYE_HEIGHT, z: this.position.z };
+    const world = {
+      blockAt: (x: number, y: number, z: number): BlockId =>
+        this.engine.isSolid(x, y, z) ? this.engine.blockAt(x, y, z) : BlockId.Air,
+    };
+    return raycast({ origin, direction: dir }, world, REACH, (block) => block !== BlockId.Air);
   }
 
   private lookDirection(): Vec3 {
@@ -393,7 +462,10 @@ export class Game {
       // for now, but the hotbar SHELL is M1: the operator reported "no
       // inventory bar", and a bar made of nothing is not a bar. Empty slots
       // still read as slots.
-      hotbar: Array.from({ length: HOTBAR_SLOTS }, () => ({ id: "", count: 0 })),
+      hotbar: Array.from({ length: HOTBAR_SLOTS }, (_, i) => {
+        const item = this.inventory[i];
+        return item ? { id: item.id, count: item.count } : { id: "", count: 0 };
+      }),
       selectedSlot: this.selectedSlot,
       health: this.health,
       hunger: this.hunger,
@@ -424,8 +496,36 @@ export class Game {
    * tools to satisfy it have not been crafted yet. When the inventory lands,
    * this reads the selected hotbar slot.
    */
+  /**
+   * The tool in the selected hotbar slot, or null.
+   *
+   * This returned null unconditionally, which meant the player could never
+   * satisfy the contract's tool rule. breakSecondsWith() returns -1 for a
+   * block that needs a tool you do not have, so an empty hotbar made the
+   * whole world unmineable - "the blocks require tools to break but there
+   * is no way to get tools".
+   */
   private heldTool(): ToolSpec | null {
-    return null;
+    const item = this.inventory[this.selectedSlot];
+    if (!item) {
+      return null;
+    }
+    return toolSpec(item.id) ?? null;
+  }
+
+  /**
+   * The block in the selected hotbar slot, or null when it is not a block.
+   *
+   * A tool is not a block, so it cannot be placed. The ids are the
+   * contract's own: a tool id (mattock_timber) for a tool, a BlockId
+   * (loam, timber, rubble) for a block.
+   */
+  private heldBlockId(): BlockId | null {
+    const item = this.inventory[this.selectedSlot];
+    if (!item) {
+      return null;
+    }
+    return ALL_BLOCK_IDS.includes(item.id as BlockId) ? (item.id as BlockId) : null;
   }
 
   /** How far through the break the player is, from 0 to 1, or null. */
