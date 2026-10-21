@@ -108,11 +108,14 @@ export function fbm2(
   z: number,
   octaves: number,
 ): number {
+  // At least one octave, or the normalisation below is 0/0 = NaN and the NaN
+  // propagates into every block placement.
+  const layers = Math.max(1, Math.floor(octaves));
   let amplitude = 1;
   let frequency = 1;
   let sum = 0;
   let norm = 0;
-  for (let octave = 0; octave < octaves; octave++) {
+  for (let octave = 0; octave < layers; octave++) {
     sum +=
       valueNoise2(seed + octave * 0x9e3779b9, x * frequency, z * frequency) *
       amplitude;

@@ -96,7 +96,11 @@ export class SeededRngImpl implements SeededRng {
   }
 
   fork(label: string): SeededRng {
-    const childSeed = mix32((this.state ^ hashLabel(label)) >>> 0);
+    // Derived from the parent's SEED, not its live state: a child stream must
+    // depend only on (seed, label), so two subsystems forked from the same
+    // parent produce identical worlds regardless of what else consumed the
+    // parent in between.
+    const childSeed = mix32((this.seed ^ hashLabel(label)) >>> 0);
     return new SeededRngImpl(childSeed);
   }
 
