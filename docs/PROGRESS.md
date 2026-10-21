@@ -296,3 +296,49 @@ green and each finding announces itself the moment it is fixed.
 
 `npm run test` → **8 files, 77 passed, 32 expected fail** · `npm run typecheck` → exit 0 ·
 `npm run lint` → exit 0 · `npm run coverage` → exit 0, 100% on `src/core`.
+
+### 9.9 Cycle 1 part 3 — the TEST AUTHOR's purity suite attacked
+
+**Commit:** `692eab0d91cdb1a14e5a5ffe7cddd4d15de9da82` · **Board:** T48, T49, T50 (owner: testauthor)
+
+`tests/purity.test.ts` (TEST AUTHOR) is the project's **primary** defence against the purity
+invariant. A guard that cannot fail is not a guard, so it got the same meta-test treatment as
+RED-TEAM's own scanner: their exact code, executed against sources that must be caught.
+
+| # | Task | Owner | Severity | Finding | Verified repro |
+|---|---|---|---|---|---|
+| T1 | T48 | testauthor | **critical** | The file list comes from a **non-recursive** `readdirSync`, so `src/core/world/` is **never scanned** — and that is exactly where the engine is putting rng, terrain, meshing and physics right now. A `Math.random()` there passes the suite completely. | `readdirSync("src/core")` → `constants.ts, index.ts, rng.ts, types.ts`; `src/core/world/` contains `blocks.ts, chunk.ts, noise.ts`, none of them scanned |
+| T2 | T49 | testauthor | **critical** | `stripComments()` deletes from `//` to end of line without knowing the `//` is inside a string. A URL on a line **silently deletes the rest of the line**, including a real `Math.random()`. False negative in the guard that watches the whole project. | `const url = "https://example.com/x"; const r = Math.random();` → after their `stripComments` → `const url = "https:` → **no violations reported** |
+| T3 | T50 | testauthor | medium | `Math . random()` (whitespace around the dot), `require("three")` and `await import("three")` all slip past the current regexes. | each verified MISSED against their exact patterns |
+
+Verified as **correctly caught** by their current patterns (no action needed): `import * as THREE
+from "three"`, `import { Scene } from "three/src/core/Scene.js"`, `from "../engine/thing.js"`,
+`from "../../engine/thing.js"`, `globalThis.Date.now()`, `globalThis.window`, `fetch ('/x')`.
+
+**T1 and T2 are the most serious findings of the cycle.** A purity suite that is blind to the
+directory the engine is actively filling, and that can be silently switched off by a URL in a
+string, would have let real impurity into the one layer the whole project depends on — while
+reporting green. This is exactly the failure mode the brief warns about: nobody can check
+purity by eye.
+
+### 9.10 Cycle 1 — final state
+
+**11 open findings across 3 owners**, all encoded as `it.fails` with a `control:` test pinning
+current behaviour:
+
+| Owner | Findings | Board |
+|---|---|---|
+| opencode (ARCHITECT) | F1 frozen-Set mutability · F2 malformed chunk keys · F3 no byte→BlockId mapping · F4 chunkKeyToString emits unreadable keys | T40–T43 |
+| hermes-linux (ENGINE) | E1 `fbm2` NaN · E2 `fork` order-dependence · E3 `chunkIndex` guard bypass · E4 seed/coordinate aliasing | T44–T47 |
+| testauthor (TEST AUTHOR) | T1 purity scan never recurses · T2 `stripComments` eats real code · T3 regex misses | T48–T50 |
+
+**Gates (read back, not assumed):** `npm run typecheck` exit 0 · `npm run lint` exit 0 ·
+`npm run test` → 9 files, **80 passed / 38 expected fail** · `npm run coverage` exit 0, **100%**
+on `src/core`.
+
+**Branch:** `feature/redteam/m1` @ `692eab0`. The canonical repo (`~/workspace/blockforge`)
+shares this worktree's `.git`, so the branch is already visible from there — there is no
+`origin` remote configured on this host, so nothing was pushed (and nothing needed to be).
+
+**Milo:** all three victory posts confirmed with read-back
+(`1562410183651627009`, `1562411850292011011`).
