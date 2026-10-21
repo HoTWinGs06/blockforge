@@ -23,6 +23,22 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Node-side helper scripts. These are not browser code: they legitimately
+    // use console and process, and must not be linted against the browser
+    // globals the rest of the repo uses.
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        performance: "readonly",
+      },
+    },
+    rules: {
+      "no-console": "off",
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/consistent-type-imports": [
         "error",

@@ -57,14 +57,45 @@ export enum BlockId {
   Millplank = "millplank",
 }
 
+/**
+ * A genuinely immutable Set.
+ *
+ * `Object.freeze` only makes an object's own PROPERTIES non-writable; a Set's
+ * members live in internal slots that it cannot reach, so `Object.freeze(new
+ * Set(...))` is still mutable. In the pure layer that is mutable global state,
+ * which is exactly what the purity and determinism gates exist to prevent.
+ *
+ * This returns a Set whose mutating methods throw, so the type stays
+ * `ReadonlySet<T>` (consumers keep using `.has()`) but a mutation attempt
+ * fails loudly at the point of the mistake instead of silently corrupting
+ * every later chunk.
+ */
+function immutableSet<T>(values: readonly T[]): ReadonlySet<T> {
+  const target = new Set<T>(values);
+  const mutators = new Set<string>(["add", "delete", "clear"]);
+  return new Proxy(target, {
+    get(source, prop) {
+      const value = Reflect.get(source, prop, source);
+      if (typeof value !== "function") return value;
+      if (mutators.has(String(prop))) {
+        return () => {
+          throw new TypeError(
+            "this block set is immutable - it is part of the frozen core contract",
+          );
+        };
+      }
+      return value.bind(source);
+    },
+  }) as ReadonlySet<T>;
+}
+
 /** Every BlockId value, in declaration order. Deterministic iteration order. */
 export const ALL_BLOCK_IDS: readonly BlockId[] = Object.freeze(
   Object.values(BlockId) as BlockId[],
 );
 
 /** Blocks that are solid to collision. Air, Tidewater and Emberflow are not. */
-export const SOLID_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
-  new Set<BlockId>([
+export const SOLID_BLOCKS: ReadonlySet<BlockId> = immutableSet([
     BlockId.Voidstone,
     BlockId.Slate,
     BlockId.Rubble,
@@ -85,18 +116,58 @@ export const SOLID_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
     BlockId.Smeltforge,
     BlockId.Craftbench,
     BlockId.Millplank,
-  ]),
-);
+  ]);
 
 /** Blocks that let light through (air, water, glass-like panes). */
-export const TRANSPARENT_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
-  new Set<BlockId>([
+export const TRANSPARENT_BLOCKS: ReadonlySet<BlockId> = immutableSet([
     BlockId.Air,
     BlockId.Tidewater,
     BlockId.Emberflow,
     BlockId.Crystpane,
-  ]),
-);
+  ]);
+
+/**
+ * Number of distinct block kinds. A chunk stores one byte per block, so byte
+ * values at or above this are not valid block encodings.
+ */
+export const BLOCK_ID_COUNT = ALL_BLOCK_IDS.length;
+
+/**
+ * The byte that stores `id` in a chunk's block array.
+ *
+ * The encoding is the index of the id in {@link ALL_BLOCK_IDS} (declaration
+ * order). This is the ONLY sanctioned mapping - consumers must not invent
+ * their own.
+ */
+export function blockIdToByte(id: BlockId): number {
+  const ordinal = ALL_BLOCK_IDS.indexOf(id);
+  if (ordinal < 0) {
+    throw new RangeError(`unknown BlockId: ${String(id)}`);
+  }
+  return ordinal;
+}
+
+/**
+ * The BlockId encoded by `byte`.
+ *
+ * Throws for any byte that is not a valid ordinal. Callers decoding
+ * untrusted bytes (a save file, a network packet) should screen with
+ * {@link isValidBlockByte} first so a corrupt value is rejected rather than
+ * thrown out of a decode loop.
+ */
+export function byteToBlockId(byte: number): BlockId {
+  if (!isValidBlockByte(byte)) {
+    throw new RangeError(
+      `invalid block byte: ${String(byte)} (valid range 0..${BLOCK_ID_COUNT - 1})`,
+    );
+  }
+  return ALL_BLOCK_IDS[byte] as BlockId;
+}
+
+/** True when `byte` encodes a real block kind. Cheap pre-check. */
+export function isValidBlockByte(byte: number): boolean {
+  return Number.isInteger(byte) && byte >= 0 && byte < BLOCK_ID_COUNT;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // World geometry

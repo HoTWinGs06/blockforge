@@ -66,23 +66,57 @@ export function blockIndex(x: number, y: number, z: number): number {
   return x + CHUNK_SIZE_X * (z + CHUNK_SIZE_Z * y);
 }
 
-/** Stable string form of a chunk key. Used for map keys and save files. */
+/**
+ * Stable string form of a chunk key. Used for map keys and save files.
+ *
+ * Validates both components: a key that cannot be read back is not a key, so
+ * serialising a fractional, NaN or infinite coordinate would produce a string
+ * that this module's own inverse rejects.
+ */
 export function chunkKeyToString(key: { cx: number; cz: number }): string {
-  return `${key.cx},${key.cz}`;
+  const cx = requireSafeInteger(key.cx, "cx");
+  const cz = requireSafeInteger(key.cz, "cz");
+  return `${cx},${cz}`;
 }
 
-/** Inverse of {@link chunkKeyToString}. */
+/**
+ * Inverse of {@link chunkKeyToString}.
+ *
+ * Parses STRICTLY: only a canonical decimal integer literal is accepted.
+ * `Number()` alone is far too permissive - it yields 0 for "" and " ", 16 for
+ * "0x10", 1000 for "1e3", 5 for "+5" and "0b101", and 1 for "1.0" - so "1,"
+ * and "1,0" would address the same chunk. This is the canonical form
+ * {@link chunkKeyToString} emits, so round-tripping is exact.
+ */
 export function chunkKeyFromString(text: string): { cx: number; cz: number } {
   const parts = text.split(",");
   if (parts.length !== 2) {
     throw new Error(`invalid chunk key: ${JSON.stringify(text)}`);
   }
-  const cx = Number(parts[0]);
-  const cz = Number(parts[1]);
-  if (!Number.isInteger(cx) || !Number.isInteger(cz)) {
+  const cx = parseIntegerLiteral(parts[0] as string);
+  const cz = parseIntegerLiteral(parts[1] as string);
+  if (cx === null || cz === null) {
     throw new Error(`invalid chunk key: ${JSON.stringify(text)}`);
   }
   return { cx, cz };
+}
+
+/** Canonical decimal integer literal only: no sign-plus, hex, exponent, or dot. */
+const INTEGER_LITERAL = /^-?(?:0|[1-9][0-9]*)$/;
+
+function parseIntegerLiteral(text: string): number | null {
+  if (!INTEGER_LITERAL.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function requireSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new RangeError(
+      `chunk key ${name} must be a safe integer, got ${String(value)}`,
+    );
+  }
+  return value;
 }
 
 /**

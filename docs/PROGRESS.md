@@ -133,6 +133,271 @@ python3 ~/workspace/agent-queue/board.py update <T-id> --owner <you> --status do
 > Python script that calls `board.py` with an **argv array** instead of
 > building a shell string.
 
+## 1c. G1 status correction (read before reporting any gate)
+
+**G1 is NOT passed.** The M1 kickoff cycle reported the coverage floor as
+satisfied for the test-suite slice. The measurement was real but was taken
+against a 49-statement denominator — `types.ts`, `constants.ts`, `index.ts` —
+which contained **no executable code**. Re-measured on the real combination
+(the test suite at `52528ad` plus the ENGINE agent's `src/core/rng.ts` and
+`src/core/world/*.ts`), independently by hermes-linux:
+
+| | |
+|---|---|
+| `npm test` | 58 / 58 pass |
+| `npm run coverage` | **exit 1** |
+| statements | 26.62 % (78/293) |
+| branches | 20.56 % (22/107) |
+| functions | 35 % (14/40) |
+| lines | 27.59 % (77/279) |
+
+**The gate is correctly armed.** It now fails because there is real code to
+cover, and the 85 % floor is enforced in `vitest.config.ts` exactly as
+intended. G1 closes when the ENGINE code has real tests against it — not
+before, and not by lowering the floor.
+
+What *is* proven: the threshold fails the build below 85 %, the test author's
+46-test suite passes against the contract, and the contract itself now carries
+41 purpose-built assertions (see the architect hardening branch below).
+
+## 1d. The build fleet (expanded during kickoff)
+
+The fleet is larger than the four herdr panes. On the Linux host there are
+**seven headless Hermes build agents, one per role**, working in the
+per-agent worktrees above:
+
+| Role | Board owner | Worktree |
+|---|---|---|
+| ENGINE | `engine` | `~/workspace/worktrees/bf-engine` |
+| GAMEPLAY | `gameplay` | `~/workspace/worktrees/bf-gameplay` |
+| RENDER/UI | `renderui` | `~/workspace/worktrees/bf-render` |
+| NETCODE | `netcode` | `~/workspace/worktrees/bf-netcode` |
+| TEST AUTHOR | `testauthor` | `~/workspace/worktrees/bf-test-author` |
+| RED-TEAM | `redteam` | `~/workspace/worktrees/bf-redteam` |
+| RELEASE | `release` | `~/workspace/worktrees/bf-release` |
+
+`board.py` `VALID_OWNERS` was **extended** to include these seven role owners
+alongside the four coordination agents (`hermes-win`, `hermes-linux`,
+`antigravity`, `opencode`) and `operator`. It was extended, **not weakened** —
+an unknown owner is still rejected with exit 1.
+
+### Two overlapping breakdowns, being reconciled
+
+| Board task | Owner | Note |
+|---|---|---|
+| T26 ENGINE | `engine` | role agent now owns the implementation |
+| T27 TEST AUTHOR | `antigravity` | 46-test contract suite landed @ `52528ad` |
+| T28 RENDER/UI | `hermes-win` | slice 1 landed @ `956858d` |
+| T29 RELEASE | `hermes-win` | CI + README landed @ `480a2f8` |
+| T30 RED-TEAM | `redteam` / `opencode` | 11 findings filed (T40–T50) |
+| T32 gameplay | `gameplay` | M3 work |
+| T34/T39 netcode | `netcode` | M4 work |
+
+T33 (renderui) and T37 (release) were dropped in favour of T28 and T29.
+
+**Open gate-order flag:** M3/M4 work is running while M1 is not complete. The
+brief says never start M(n+1) until every gate of M(n) passes. Raised for the
+architect's decision — finish M1 first, or run ahead and hold the ordering at
+merge time.
+
+## 1e. GitHub access (discovered, verified — do not rediscover)
+
+**Account:** `HoTWinGs06` (user type, not site_admin). Fine-grained token,
+prefix `github_pat_`.
+
+### The token lives in ONE place
+
+```sh
+# Linux host only
+~/.hermes/.env        ->  GITHUB_TOKEN=<the fine-grained PAT>
+```
+
+It is **not** in `~/.config/gh/hosts.yml`, and the `gh` CLI does not read
+`~/.hermes/.env` — you must export it yourself:
+
+```sh
+export GH_TOKEN=$(grep -m1 -oE '^GITHUB_TOKEN=.*' ~/.hermes/.env | cut -d= -f2- | tr -d '"')
+gh auth status        # -> Logged in to github.com account HoTWinGs06 (GH_TOKEN)
+```
+
+### What works, and what does not — measured, not assumed
+
+| Host | `gh` CLI | Git transport to GitHub | Notes |
+|---|---|---|---|
+| Linux build host | **yes**, 2.102.0 at `~/.local/bin/gh` | **HTTPS + token — verified** (`git ls-remote` exit 0) | SSH to GitHub is **not** authorised: the key is offered but never accepted |
+| Windows (the PC) | **not installed** | **HTTPS + Git Credential Manager — verified** (stored credential, user `HoTWinGs06`) | `gh` absent; GCM 2.7.0 present; no GitHub SSH key either (`git@github.com` → permission denied) |
+
+**Use HTTPS remotes everywhere.** SSH to GitHub fails from both hosts.
+
+Linux push without ever writing the token to disk or into a URL:
+
+```sh
+git config --global credential.helper   '!f() { echo username=x-access-token; echo password=$(grep -m1 -oE "^GITHUB_TOKEN=.*" ~/.hermes/.env | cut -d= -f2- | tr -d """); }; f'
+git remote add origin https://github.com/HoTWinGs06/blockforge.git
+```
+
+The Windows side needs nothing extra — GCM already holds the credential.
+
+### gitleaks — now installed on both hosts
+
+Required by the brief before any push, and a gate in the CI workflow.
+
+| Host | Path | Version |
+|---|---|---|
+| Linux | `~/.local/bin/gitleaks` | 8.30.1 |
+| Windows | `C:\Users\JOEL\AppData\Local\Programs\gitleaks\gitleaks.exe` | 8.30.1 |
+
+**The canonical repo currently scans CLEAN** — `gitleaks dir .` over
+`~/workspace/blockforge` reports **0 findings** across ~170 KB. Re-run it
+before every push.
+
+### THE REPO STILL MUST NOT BE CREATED YET
+
+`gh repo view HoTWinGs06/blockforge` → *could not resolve to a Repository*.
+That is correct. The brief says the public repo is created **only after M1
+and M2 gates pass**, and M1 is not complete (the engine has not landed on
+main and G1 is not passed).
+
+When the gate opens, RELEASE creates it with:
+
+```sh
+gh repo create blockforge --public --source=. --remote=origin
+```
+
+One caveat recorded now rather than discovered later: `gh repo create` has
+**no `--dry-run`**, and the token is fine-grained so its scopes are not
+listed by the API. Create-permission therefore cannot be verified without
+creating. If it fails, the fallbacks are a classic PAT with `public_repo`
+scope, or creating the repo once in the browser and letting `gh` attach to
+it — both need no code changes.
+
+The canonical Linux repo currently has **no git remote** (`git remote -v` is
+empty), which is expected until the repo exists.
+
+## 1f. The M1 prototype — the first playable build
+
+**Branch:** `feature/architect/m1-integration` @ `05576ec` on the canonical repo.
+It merges `feature/engine/m1` + `feature/hermes-win/g2` + the architect's
+T40–T43 contract hardening. The render branch **on its own did not build** —
+`engineBridge.ts` could not resolve `../engine/index.js`, because the engine
+had never been merged in. This merge is what makes the app real.
+
+**Gates, all read back, not assumed:**
+
+| | |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run build` | exit 0 |
+| `npx playwright test` (G2) | **4 passed (4)** — including *loads the game with no console errors or warnings* and *keeps the console clean across the whole run* |
+
+**What works, verified by driving it:** the world generates; the camera is
+first person; `WASD` moves; `F` breaks and `R` places a block; the raycast
+reports the targeted block with world coordinates (`Rubble -2, 68, -9`, then
+`Clay -2, 68, -9` once the break changed the target); the pause menu renders;
+the originality disclaimer is in the HUD.
+
+**Run it:**
+
+```sh
+git clone hermes:~/workspace/blockforge      # or use an existing clone
+git checkout feature/architect/m1-integration
+npm ci
+npm run dev            # http://localhost:5173
+```
+
+Controls are in the README. Screenshots of the prototype are in
+`C:/Users/JOEL/workspace/blockforge-play/prototype-1..5.png` on the Windows box.
+
+**Known visual issue (T53, owner RENDER/UI): the world is far too dark.** The
+terrain is legible and per-face shading works — faces at different angles get
+different tones, so the directional light is live — but block faces read as
+almost black. Either the procedural texture atlas is far too dark, the
+ambient/hemisphere light is too weak against the directional, or the material
+is not lit as intended. This is the gap between "technically runs" and
+"pleasant to play", and it should be fixed before the renderer is built on
+further.
+
+**Not in M1 yet:** inventory and hotbar contents (slots are empty), crafting,
+mobs, hunger, biomes, caves, trees, water, day/night, save/load,
+multiplayer, and the settings menu beyond the pause overlay.
+
+## 1g. Speed and cleanliness pass (measured, not asserted)
+
+### The biggest drag was structural, not tool speed
+
+`main` was **45 files and 5,860 lines behind** — every agent was branching
+from the bare scaffold, and branches were stacking on each other instead of on
+a shared `main`. That is what produced the stale golden hash: the render
+branch's `engine-wiring` test pinned a world hash recorded against a
+mid-flight engine, and the engine kept moving. The render branch also did not
+build on its own (`engineBridge.ts` could not resolve `../engine/index.js`).
+
+`main` is now the integrated state (`feature/architect/m1-integration`,
+`672dee1`) — **50 files, 6,014 insertions** versus the scaffold. Branch from
+`main` now, not from a stacked branch.
+
+### One-command gate
+
+```sh
+npm run verify     # typecheck -> lint -> test -> coverage -> build, with a timing table
+npm run check      # the fast inner loop: typecheck, lint, test
+```
+
+`scripts/verify.mjs` runs the chain in order, stops at the first failure,
+names the failing step, and prints per-step milliseconds. One command and one
+summary beats five commands and five exit codes to eyeball.
+
+### Measured wins
+
+| Change | Before | After | Note |
+|---|---|---|---|
+| vitest `isolate: false` | 7,855 ms | **6,151 ms** | same 105-test suite, −1.7 s (−22 %) |
+| new worktree setup | `npm ci`, 6–30 s, ~150 MB | **symlinked `node_modules`** | `scripts/new-worktree.sh` |
+
+`isolate: false` reuses one worker instead of spawning one per file. `src/core`
+is pure, so files cannot leak state into each other — and sharing the module
+registry would *expose* a leak if one existed.
+
+`scripts/new-worktree.sh <agent> [suffix]` creates a worktree and links the
+canonical repo's `node_modules` into it. Seven worktrees were duplicating
+~1 GB of dependencies. **Do not run `npm ci` in a linked worktree** — it would
+delete the shared tree. Run `npm install <pkg>` if you need a new dependency;
+that replaces the link with a real tree, which is correct but slower.
+
+### Cleanliness
+
+- `src/dev/entry.ts` → **`src/entry.ts`**. It is the production entry point
+  and it ships to users; the dev world stand-in it replaced is gone, so the
+  `dev/` name was a lie about what the file is.
+- `eslint.config.js` gained a **Node-globals override for `scripts/`** — the
+  Node helper scripts were being linted against browser globals and
+  `console`/`process` came back undefined.
+- The **vacuous-hash canary was inverted**. `tests/engine-wiring.test.ts`
+  deliberately pinned the OLD bug (`a.hash() === c.hash()` for two *different*
+  seeds) so that finding E5 stayed visible. The engine has since **fixed E5**
+  — `hash()` now mixes the seed and the chunk contents — so the canary fired
+  and had to be inverted to assert the fixed behaviour. The new form is
+  *stronger*: same seed → same hash, **different seed → different hash**,
+  which the old form could never have detected.
+
+### Gate state on `main` right now
+
+| Step | Result |
+|---|---|
+| typecheck | 0 |
+| lint | 0 |
+| test | **105 / 105 green** across 9 files |
+| build | 0 |
+| G2 Playwright | **4 / 4**, including the zero-console-warnings assertion |
+| **coverage (G1)** | **RED — 64.86 % statements vs the 85 % floor** |
+
+The coverage gap is real and precisely located: `physics.ts` 5.68 % and
+`raycast.ts` **0 %** are the two holes; branches sit at 49 % even where
+statements are high. `rng.ts` 82.85 %, `meshing.ts` 90.72 % and `noise.ts`
+100 % are close. G1 closes when the engine's code has real tests against it —
+**the floor must not be lowered to make it green.** Filed as T55.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |

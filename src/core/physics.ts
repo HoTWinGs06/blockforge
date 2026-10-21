@@ -33,6 +33,14 @@ export const PLAYER_HEIGHT = 1.8;
 const EPSILON = 1e-9;
 
 /**
+ * Longest distance a body may move in one collision sample, in blocks.
+ *
+ * A block is one unit thick, so any move shorter than this cannot pass a
+ * whole block between two samples.
+ */
+const MAX_MOVE_STEP = 0.5;
+
+/**
  * A world query for collision. Implementations are pure lookups — the
  * engine's chunk store backs one, a test can back another with a map.
  */
@@ -146,6 +154,39 @@ export function moveWithCollisions(
   world: SolidWorld,
   halfWidth = PLAYER_HALF_WIDTH,
   height = PLAYER_HEIGHT,
+): MoveResult {
+  // A single sample of the body's box cannot see a thin obstacle it passed
+  // entirely between two positions, so a fast body would tunnel through the
+  // floor. Splitting a long move into steps shorter than the smallest block
+  // means every obstacle is sampled.
+  const longest = Math.max(Math.abs(delta.x), Math.abs(delta.y), Math.abs(delta.z));
+  const steps = Math.max(1, Math.ceil(longest / MAX_MOVE_STEP));
+  if (steps === 1) {
+    return moveOnce(position, velocity, delta, world, halfWidth, height);
+  }
+  const step = { x: delta.x / steps, y: delta.y / steps, z: delta.z / steps };
+  let at = position;
+  let vel = velocity;
+  let onGround = false;
+  let collided = false;
+  for (let i = 0; i < steps; i++) {
+    const result = moveOnce(at, vel, step, world, halfWidth, height);
+    at = result.position;
+    vel = result.velocity;
+    onGround = onGround || result.onGround;
+    collided = collided || result.collided;
+  }
+  return { position: at, velocity: vel, onGround, collided };
+}
+
+/** One collision-resolved move, with no sub-stepping. */
+function moveOnce(
+  position: Vec3,
+  velocity: Vec3,
+  delta: Vec3,
+  world: SolidWorld,
+  halfWidth: number,
+  height: number,
 ): MoveResult {
   let x = position.x;
   let y = position.y;
