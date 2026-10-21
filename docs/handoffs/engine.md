@@ -166,12 +166,197 @@ centrally. The entry:
 
 ---
 
+## T47 — RED-TEAM E4: valueNoise2 aliases coordinates past int32 (x|0 truncation)
+
+**Status:** DONE. Commit `c97eb34` on `feature/engine/m1`.
+
+### The hole
+
+`src/core/noise.ts` `hash2`/`hash3` truncated every input before hashing
+it:
+
+```ts
+let h = (seed ^ Math.imul(x | 0, 0x27d4eb2d)) | 0;   // OLD
+h = Math.imul(h ^ (z | 0), 0x165667b1);
+```
+
+`|` and `^` both do **ToInt32**. Everything above bit 31 was discarded
+before the value was ever hashed, so the hash was a function of the
+input's low 32 bits only. Three distinct failures came out of that one
+line:
+
+| # | failure | verified repro (before the fix) |
+|---|---|---|
+| 1 | the lattice repeats with period 2^32 | `valueNoise2(1234, 10.5 + 2^32, 20.5) === valueNoise2(1234, 10.5, 20.5)` -> `true` |
+| 2 | `+2^31` and `-2^31` are the same point | `valueNoise2(5, 2147483648, 0) === valueNoise2(5, -2147483648, 0)` -> `true` |
+| 3 | two world seeds 2^32 apart are the same world | `fbm2(4294967296, 10.5, 20.5, 1) === fbm2(0, 10.5, 20.5, 1)` -> `true`, and the chunk bytes were identical |
+
+Failure 3 was not only the seed: `fbm2` computed
+`valueNoise2(seed + octave * 0x9e3779b9, ...)`. That sum leaves the
+32-bit domain from octave 2 onward (`seed=0, octave=2` -> `5308871538`
+-> int32 `1013904242`), so two different `(seed, octave)` pairs landed on
+the same noise.
+
+`src/core/world.ts` had the same defect in its per-layer seeds:
+`seed ^ 0x5f356495` and four more `seed ^ CONST` sites. `^` coerces to
+int32, so the layers of the worlds seeded 0 and 2^32 were identical too.
+
+This was a pure-function bug, which is the dangerous kind for a
+determinism-driven project: it passed every hash test and was still
+wrong. Nothing about "same seed, same world" was violated — the world
+was correct and merely not injective.
+
+### The fix
+
+Every integer input is now mixed in as a **low/high pair of 32-bit
+halves**, so no part of it is silently dropped:
+
+- `hash2`/`hash3` take the low word (`value >>> 0`) and the high word
+  (the floor quotient by 2^32) of the coordinate and mix both in.
+- The seed is folded with `seedWord()`, which mixes in the high half
+  too, so a seed and that seed plus 2^32 no longer collide.
+- The octave index became a **separate hashed input** (the `stream`
+  word) instead of an overflowing addition to the seed, so a
+  `(seed, octave)` pair cannot collide with another one.
+- `world.ts`'s per-layer seeds moved from `seed ^ SALT` to a
+  `deriveSeed(seed, salt)` that folds the seed's high half in as well.
+
+The low/high pair is an exact decomposition of the integer — `low` is
+the coordinate mod 2^32 and `high` its floor quotient — so negative
+coordinates decompose the same way positive ones do, and
+`valueNoise2(s, x, z)` is now a genuine function of the whole
+coordinate rather than of its low 32 bits.
+
+**Two performance details.** The first working version of this fix
+doubled chunk-generation time (1.11 -> 2.07 ms), because the seed and
+coordinate splits were recomputed for every lattice point of every
+sample. They are now hoisted to once per sample — `high32PlusOne()`
+derives the second corner's high word from the first with a carry
+check, so a cell needs one split per axis, not one per corner — and the
+vein seed is derived once per chunk instead of once per sample.
+Generation ended at **1.73 ms/chunk**, close to where it started.
+
+### Verified
+
+The verifier's ORIGINAL repro, re-run in a fresh process against the
+compiled commit `c97eb34`:
+
+```
+valueNoise2(1234,10.5,20.5)         = 0.28578590939287096
+valueNoise2(1234,10.5+2^32,20.5)     = 0.34588960045948625   ALIASED on x? false
+valueNoise2(1234,10.5,20.5+2^32)     = 0.5130413141450845    ALIASED on z? false
+fbm2(0,10.5,20.5,1)                  = 0.361511453113053
+fbm2(2^32,10.5,20.5,1)               = 0.6998733225045726    same as seed 0? false
+terrainHeight(1234,0,0)              = 64
+terrainHeight(1234,0,2^32)           = 76                    (does not repeat)
+chunk bytes differing, seed 0 vs 2^32 = 4858                 (not the same world)
+```
+
+Gates, all measured on the committed tree:
+
+- `npm run typecheck` -> exit 0
+- `npm run lint` -> exit 0, 0 errors (7 pre-existing no-console warnings)
+- `npx vitest run` -> 16 files, 224 passed (224)
+- `npm run coverage` -> exit 0; src/core 95.9% stmts / 92.21% branch /
+  96.49% funcs / 96.37% lines, against the 85 floor in `vitest.config.ts`
+  which was NOT touched
+- `npm run build` -> exit 0
+- G6 determinism -> PASS, 5 seeds identical across fresh processes
+  (0 919b1494, 1 adeb29e1, 12345 188407dd, 2147483647 a90dbffb,
+  -1 083ca468)
+- G3 bench -> PASS, 4.492 ms/chunk average, 4.960 ms p95, against the
+  16 ms budget (generation 1.734 ms, meshing 2.758 ms)
+- engine self-check -> PASSED, now 43 checks (13 new ones for E4)
+
+### Behaviour contract for the TEST AUTHOR
+
+`tests/` is not ENGINE's. The E4 behaviour is pinned in ENGINE's own
+`scripts/selfcheck/engineCheck.ts` (check 11) instead. The contract:
+
+- `valueNoise2(seed, x, z)` is **not** periodic in x or z with period
+  2^32: `valueNoise2(s, x + 2^32, z) !== valueNoise2(s, x, z)` and the
+  same for z.
+- `valueNoise3(seed, x, y, z)` is not periodic in **any** of its three
+  axes with period 2^32.
+- `valueNoise2(s, 2^31, z) !== valueNoise2(s, -2^31, z)`.
+- The **seed** is not aliased either: `valueNoise2(0, x, z) !==
+  valueNoise2(2^32, x, z)` and the same for `fbm2`. Two world seeds 2^32
+  apart produce different chunks.
+- `fbm2(seed, x, z, octaves)` does not alias one `(seed, octave)` pair
+  with another.
+- Unchanged: the values are still in `[0, 1]`, the function is still
+  deterministic, different seeds still give different noise, and
+  neighbouring lattice points still differ.
+
+**This change alters generated terrain for existing seeds.** That is the
+point of the fix — the old terrain was wrong — but it means any test
+that pins a specific terrain height or block byte for a given seed will
+need its expected value updated. No test in `tests/` pins one today
+(the suite is 224/224 green as committed), but a golden-value test
+added later must be written against the new terrain.
+
+### Notes for the fleet
+
+- **The seed is still a 32-bit value as far as the RNG is concerned.**
+  `src/core/rng.ts` does `seed >>> 0`, so `createRng(2^32)` and
+  `createRng(0)` still give the same stream, and `World.hash()` still
+  mixes only `seed >>> 0`. This fix is about the NOISE layer, which is
+  the whole of terrain generation. A world seeded `2^32` now has
+  different terrain from a world seeded `0` but the same RNG stream —
+  worth knowing if anyone extends the seed range, since the two would
+  then need to move together. Flagging, not fixing: changing the RNG's
+  seed semantics is a contract change beyond this task.
+- The `stream` word in `hash2` is what makes the fBm octaves distinct.
+  It is a separate hashed input rather than a constant folded into the
+  seed, because folding a constant into a 32-bit seed is exactly the
+  overflow that broke the octave offsets in the first place.
+- `scripts/tsconfig.build.json` still has the T86 bug (TS5096:
+  `allowImportingTsExtensions` with `noEmit: false`), so the gate
+  scripts need `npx tsc -p scripts/tsconfig.build.json
+  --allowImportingTsExtensions false`. I did not fix it — it is T86, and
+  it is a one-line change in the same file I would otherwise not touch.
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+Same reasoning as T46's entry below: the entry lives here and on the
+board rather than in `docs/VICTORIES.md`, because the brief contradicts
+itself about that file and a concurrent append from a second agent
+produces a CONTENT CONFLICT that strands the role's whole branch on the
+dispatcher's reap. The architect folds these in centrally.
+
+> - [2026-10-21T21:10:00Z] bugfix — the terrain repeated with a period of
+>   2^32 blocks, and two world seeds 2^32 apart produced byte-identical
+>   worlds. `hash2`/`hash3` in src/core/noise.ts truncated every input
+>   before hashing it (`Math.imul(x | 0, ...)` and `seed ^ ...`), and both
+>   `|` and `^` do ToInt32, so everything above bit 31 was discarded
+>   before the value was ever hashed: the hash was a function of the
+>   input's low 32 bits only. The same defect appeared in fbm2's
+>   `seed + octave * 0x9e3779b9` (which leaves the 32-bit domain from
+>   octave 2 onward, so two different (seed, octave) pairs collided) and
+>   in five `seed ^ CONST` per-layer seeds in src/core/world.ts. Every
+>   integer input is now mixed in as a low/high pair of 32-bit halves, the
+>   octave index became a separate hashed input instead of an overflowing
+>   addition, and the per-layer seeds moved to a deriveSeed() that folds
+>   the seed's high half in. The verifier's original repro re-run in a
+>   fresh process against the compiled commit: valueNoise2(1234,10.5,20.5)
+>   = 0.28578590939287096 vs valueNoise2(1234,10.5+2^32,20.5) =
+>   0.34588960045948625 (no longer aliased), fbm2(0,...) = 0.361511453113053
+>   vs fbm2(2^32,...) = 0.6998733225045726 (no longer the same world), and
+>   4858 chunk bytes now differ between world seeds 0 and 2^32. The hot
+>   path was kept flat by hoisting the splits to once per sample rather
+>   than once per lattice point: generation 1.10 -> 1.73 ms/chunk, G3
+>   total 4.49 ms avg / 4.96 ms p95 against the 16 ms budget. Evidence:
+>   commit c97eb34, scripts/selfcheck/engineCheck.ts check 11 (13 new
+>   assertions), typecheck 0, lint 0 errors, 224/224 tests, coverage exit
+>   0 (95.9% stmts / 92.21% branch against the untouched 85 floor), G6 5
+>   seeds identical across fresh processes — M1
+
+---
+
 ## Still open in ENGINE's lane
 
-- **T47** — RED-TEAM E4: `valueNoise2` aliases coordinates past int32
-  (`x | 0` truncation), so terrain repeats with period 2^32. `src/core/noise.ts`.
-  Repro: `valueNoise2(5, 2147483648, 0) === valueNoise2(5, -2147483648, 0)`.
-  Not started — T46 was the smaller fix and went first.
 - **T86** — the G3/G6/selfcheck gate scripts die with TS5096 because
   `scripts/tsconfig.build.json` sets `noEmit: false` while the root
   `tsconfig.json` sets `allowImportingTsExtensions: true`. I built and ran

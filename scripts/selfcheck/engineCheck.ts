@@ -13,9 +13,17 @@
  */
 
 import { raycast, placementCell } from "../../src/core/raycast.js";
-import { World, chunkIndex, createChunk, getBlock, setBlock } from "../../src/core/world.js";
+import {
+  World,
+  chunkIndex,
+  createChunk,
+  generateChunk,
+  getBlock,
+  setBlock,
+  terrainHeight,
+} from "../../src/core/world.js";
 import { stepPhysics, bodyAabb, collides, solidWorldFromBlocks } from "../../src/core/physics.js";
-import { fbm2 } from "../../src/core/noise.js";
+import { fbm2, valueNoise2, valueNoise3 } from "../../src/core/noise.js";
 import { createRng } from "../../src/core/rng.js";
 import { BlockId, SOLID_BLOCKS } from "../../src/core/types.js";
 import { CHUNK_SIZE_Y, blockIndex } from "../../src/core/constants.js";
@@ -268,6 +276,104 @@ const world = {
   check("getBlock reads air outside the chunk", getBlock(chunk, 16, 0, 0) === 0);
   setBlock(chunk, 16, 0, 0, BlockId.Rubble);
   check("setBlock outside the chunk writes nothing", getBlock(chunk, 0, 0, 1) === 0);
+}
+
+// 11. The noise hash must not alias coordinates or seeds past int32 (E4).
+// The old hash truncated the lattice coordinate with `x | 0` and coerced the
+// seed with `^`, so the terrain repeated with a period of 2^32 blocks and
+// two world seeds 2^32 apart produced byte-identical terrain. A pure
+// function that is silently periodic is the worst kind of bug for a
+// determinism-driven project: it passes every hash test and is still wrong.
+{
+  const TWO_POW_32 = 4294967296;
+  const base = valueNoise2(1234, 10.5, 20.5);
+
+  // The verifier's original repro: the coordinate aliases past int32.
+  check(
+    "valueNoise2 does not alias x at +2^32",
+    base !== valueNoise2(1234, 10.5 + TWO_POW_32, 20.5),
+  );
+  check(
+    "valueNoise2 does not alias z at +2^32",
+    base !== valueNoise2(1234, 10.5, 20.5 + TWO_POW_32),
+  );
+  check(
+    "valueNoise2 does not alias +2^31 onto -2^31",
+    valueNoise2(5, 2147483648, 0) !== valueNoise2(5, -2147483648, 0),
+  );
+
+  // The seed is an input too: the old `^` coerced it to int32, so seed 0
+  // and seed 2^32 gave the same terrain.
+  check(
+    "valueNoise2 does not alias the seed at +2^32",
+    valueNoise2(0, 10.5, 20.5) !== valueNoise2(TWO_POW_32, 10.5, 20.5),
+  );
+  check(
+    "fbm2 does not alias the seed at +2^32",
+    fbm2(0, 10.5, 20.5, 1) !== fbm2(TWO_POW_32, 10.5, 20.5, 1),
+  );
+
+  // The octave index is a separate hashed input, so a (seed, octave) pair
+  // cannot collide with another one through an overflowing addition.
+  check(
+    "fbm2 does not alias a (seed, octave) pair",
+    fbm2(0, 10.5, 20.5, 1) !== fbm2((2 * 0x9e3779b9) % TWO_POW_32, 10.5, 20.5, 1),
+  );
+
+  // The 3D hash had the same truncation on all three axes.
+  check(
+    "valueNoise3 does not alias x, y or z at +2^32",
+    valueNoise3(1234, 10.5, 3.5, 20.5) !== valueNoise3(1234, 10.5 + TWO_POW_32, 3.5, 20.5) &&
+      valueNoise3(1234, 10.5, 3.5, 20.5) !== valueNoise3(1234, 10.5, 3.5 + TWO_POW_32, 20.5) &&
+      valueNoise3(1234, 10.5, 3.5, 20.5) !== valueNoise3(1234, 10.5, 3.5, 20.5 + TWO_POW_32),
+  );
+
+  // The terrain itself must not repeat at the horizon.
+  const nearHeight = terrainHeight(1234, 0, 0);
+  check(
+    "the terrain height does not repeat at z + 2^32",
+    nearHeight !== terrainHeight(1234, 0, TWO_POW_32),
+    `${nearHeight} vs ${terrainHeight(1234, 0, TWO_POW_32)}`,
+  );
+
+  // Two world seeds 2^32 apart must not produce the same chunk.
+  const chunkA = generateChunk(0, { cx: 0, cz: 0 });
+  const chunkB = generateChunk(TWO_POW_32, { cx: 0, cz: 0 });
+  let differing = 0;
+  for (let i = 0; i < chunkA.blocks.length; i++) {
+    if (chunkA.blocks[i] !== chunkB.blocks[i]) differing++;
+  }
+  check(
+    "a chunk from seed 0 differs from a chunk from seed 2^32",
+    differing > 0,
+    `${differing} bytes differ`,
+  );
+
+  // The fix must not break the properties the noise is relied on for.
+  let inRange = true;
+  for (let i = 0; i < 2000; i++) {
+    const v = valueNoise2(1234, i * 0.37, i * 0.71);
+    const f = fbm2(1234, i * 0.37, i * 0.71, 4);
+    if (!(v >= 0 && v < 1) || !(f >= 0 && f <= 1)) inRange = false;
+  }
+  check("noise still stays in [0, 1]", inRange);
+  check(
+    "noise is still deterministic",
+    valueNoise2(1234, 10.5, 20.5) === valueNoise2(1234, 10.5, 20.5) &&
+      fbm2(1234, 10.5, 20.5, 4) === fbm2(1234, 10.5, 20.5, 4),
+  );
+  check(
+    "different seeds still give different noise",
+    fbm2(1234, 10.5, 20.5, 4) !== fbm2(9999, 10.5, 20.5, 4),
+  );
+
+  // Neighbouring lattice points must not collapse onto each other, which
+  // a hash that folds the coordinate badly could do.
+  let collisions = 0;
+  for (let i = 0; i < 500; i++) {
+    if (valueNoise2(1234, i, 0) === valueNoise2(1234, i + 1, 0)) collisions++;
+  }
+  check("neighbouring lattice points still differ", collisions === 0, `${collisions} collisions`);
 }
 
 if (failures > 0) {

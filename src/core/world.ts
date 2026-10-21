@@ -207,6 +207,25 @@ const O_GILDENSEAM = blockOrdinal(BlockId.Gildenseam);
 const O_LUMENCRYSTAL = blockOrdinal(BlockId.Lumencrystal);
 const O_CRYSTPANE = blockOrdinal(BlockId.Crystpane);
 
+/** 2^32 — the boundary between the low and high 32-bit halves of a number. */
+const TWO_POW_32 = 4294967296;
+
+/**
+ * Derive a per-layer seed from the world seed.
+ *
+ * `seed ^ SALT` coerced the seed to int32, so two world seeds 2^32 apart
+ * shared every derived layer. The seed is mixed as a low/high pair of 32-bit
+ * words instead, so the whole seed reaches the hash.
+ */
+function deriveSeed(seed: number, salt: number): number {
+  const lo = seed >>> 0;
+  const hi = Math.floor(seed / TWO_POW_32) | 0;
+  let h = Math.imul(lo ^ salt, 0x27d4eb2d);
+  h = Math.imul(h ^ hi, 0x85ebca6b);
+  h ^= h >>> 15;
+  return h >>> 0;
+}
+
 /**
  * Terrain height at a world column.
  *
@@ -220,7 +239,7 @@ export function terrainHeight(
   worldZ: number,
 ): number {
   const continental = fbm2(seed, worldX / 180, worldZ / 180, 4);
-  const hills = fbm2(seed ^ 0x5f356495, worldX / 48, worldZ / 48, 3);
+  const hills = fbm2(deriveSeed(seed, 0x5f356495), worldX / 48, worldZ / 48, 3);
   const raw = 24 + continental * 74 + hills * 26;
   return Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(raw)));
 }
@@ -237,7 +256,11 @@ function surfaceBlock(
   worldZ: number,
   height: number,
 ): number {
-  const moisture = valueNoise2(seed ^ 0x2545f491, worldX / 64, worldZ / 64);
+  const moisture = valueNoise2(
+    deriveSeed(seed, 0x2545f491),
+    worldX / 64,
+    worldZ / 64,
+  );
   if (height <= SEA_LEVEL + 1) {
     return O_SAND;
   }
@@ -291,12 +314,19 @@ function fillChunk(seed: number, key: ChunkKey, blocks: Uint8Array): void {
   }
 
   // Pass 2: ore veins, placed by 3D noise so they read as veins.
+  // The vein seed does not change within a chunk, so it is derived once.
+  const veinSeed = deriveSeed(seed, 0x7f4a7c15);
   for (let lx = 0; lx < CHUNK_SIZE_X; lx++) {
     const worldX = baseX + lx;
     for (let lz = 0; lz < CHUNK_SIZE_Z; lz++) {
       const worldZ = baseZ + lz;
       for (let y = 1; y < 40; y++) {
-        const vein = valueNoise3(seed ^ 0x7f4a7c15, worldX / 7, y / 7, worldZ / 7);
+        const vein = valueNoise3(
+          veinSeed,
+          worldX / 7,
+          y / 7,
+          worldZ / 7,
+        );
         let ore = -1;
         if (vein > 0.955) {
           ore = O_LUMENCRYSTAL;
@@ -330,7 +360,11 @@ function fillChunk(seed: number, key: ChunkKey, blocks: Uint8Array): void {
         continue;
       }
       // Sparse per-column hash: roughly one tree per ~40 eligible columns.
-      const pick = valueNoise2(seed ^ 0x1b873593, worldX * 0.37, worldZ * 0.37);
+      const pick = valueNoise2(
+        deriveSeed(seed, 0x1b873593),
+        worldX * 0.37,
+        worldZ * 0.37,
+      );
       if (pick > 0.965) {
         placeTree(seed, blocks, lx, height + 1, lz);
       } else if (pick < 0.012) {
@@ -351,7 +385,8 @@ function placeTree(
   baseY: number,
   lz: number,
 ): void {
-  const height = 4 + (Math.floor(valueNoise2(seed ^ 0x27d4eb2f, lx, lz) * 3) | 0);
+  const height =
+    4 + (Math.floor(valueNoise2(deriveSeed(seed, 0x27d4eb2f), lx, lz) * 3) | 0);
   const topY = baseY + height - 1;
   if (topY + 2 >= CHUNK_SIZE_Y) {
     return;
