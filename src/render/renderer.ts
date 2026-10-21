@@ -198,6 +198,7 @@ export class WorldRenderer {
     });
     this.renderer.setSize(canvas.clientWidth, Math.max(1, canvas.clientHeight), false);
     this.renderer.setPixelRatio(1);
+    this.viewmodel.setViewport(canvas.clientWidth, Math.max(1, canvas.clientHeight));
 
     // Lighting: sky light, a warm key light, and a floor of ambient.
     //
@@ -377,6 +378,19 @@ export class WorldRenderer {
   }
 
   /**
+   * Where the hand is on the screen, in CSS pixels relative to the canvas.
+   *
+   * A browser test needs this to sample the HAND's pixels. The hand is a
+   * child of the camera, so its screen position is fixed by the projection
+   * and does not move when the player looks around - a test can read this
+   * once and sample exactly the hand, instead of averaging a wide region
+   * that is mostly background.
+   */
+  get viewmodelScreenBounds(): { x: number; y: number; width: number; height: number } | null {
+    return this.viewmodel.screenBounds;
+  }
+
+  /**
    * Whether the hand's material has fog enabled.
    *
    * It must NOT. The hand sits far inside the chunk fog's near plane, so fog
@@ -396,6 +410,7 @@ export class WorldRenderer {
     this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, Math.max(1, height), false);
+    this.viewmodel.setViewport(width, Math.max(1, height));
   }
 
   dispose(): void {

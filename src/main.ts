@@ -692,6 +692,7 @@ export class Game {
       heldBlock: () => this.renderer.heldBlock,
       viewmodelUvBounds: () => this.renderer.viewmodelUvBounds,
       viewmodelHasFog: () => this.renderer.viewmodelHasFog,
+      viewmodelScreenBounds: () => this.renderer.viewmodelScreenBounds,
     };
   }
 }
@@ -758,6 +759,15 @@ export interface GameHandle {
   viewmodelUvBounds(): { minU: number; maxU: number; minV: number; maxV: number };
   /** Whether the hand's material has fog enabled. It must not. */
   viewmodelHasFog(): boolean;
+  /**
+   * Where the hand is on the screen, in CSS pixels relative to the canvas.
+   *
+   * The hand is parented to the camera, so this box does not move when the
+   * player looks around. A browser test that wants to look at the HAND's
+   * pixels - rather than at a wide region that is mostly background - reads
+   * this and samples exactly the hand.
+   */
+  viewmodelScreenBounds(): { x: number; y: number; width: number; height: number } | null;
 }
 
 /** The handle for the game running in this page, if there is one. */
