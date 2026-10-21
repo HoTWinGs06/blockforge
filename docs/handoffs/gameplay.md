@@ -279,3 +279,32 @@ the engine's file. The four self-check scripts all PASS when the compiler is
 given the one-flag override that T86's note already verified
 (`npx tsc -p scripts/tsconfig.build.json --allowImportingTsExtensions false`):
 engine 20/20, mesh 8/8, crafting 51/51, drops 72/72.
+
+### The victory log
+
+`docs/VICTORIES.md` is the ARCHITECT's file — the role's own HOW TO WORK says
+not to edit it, because seven agents appending to one file in seven worktrees
+guarantees merge conflicts and lost work, and the T81 commit in this same
+branch (`afbebb0`) sets that precedent. So the victory-log entry lives here
+instead, ready for the architect to copy verbatim into `docs/VICTORIES.md`:
+
+```
+- [2026-10-21T18:35:00Z] feature — broken blocks become collectable items, and
+  the pack is real. The operator reported "not able to collect broken blocks no
+  inventory" — two halves, both now in the tree. Breaking a block LEAVES AN
+  ITEM on the ground where it was broken, and the player walks over it to
+  collect it; the hotbar holds what the player actually carries with the count
+  of each, and placing a block TAKES ONE OUT, so the count is the truth. The
+  wrong-tool rule is applied in the drop table itself, not trusted from the
+  caller: a block that needs a tool and was not broken with one drops NOTHING,
+  and so does one broken with the wrong KIND of tool — which is what makes
+  tools worth crafting. A dropped item's position is a PURE FUNCTION OF THE
+  TICK, so the same break at the same tick always leaves the item in the same
+  place whatever order the world was updated in — evidence: commit 214d4da on
+  feature/gameplay/m1, `npm run typecheck` exit 0, `npm run lint` exit 0,
+  `npm test` 224/224, `npm run build` exit 0, 72/72 assertions in
+  `scripts/selfcheck/dropsCheck.ts`, and `e2e/drops.spec.ts` 2 passed in
+  Chromium driving the real game — M3
+```
+
+Posted to the Milo butler server — message id `1562532097288044618`.
