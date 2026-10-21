@@ -73,6 +73,27 @@ test.describe("T70 guard: hold-to-break", () => {
     );
     expect(targeted, "the player must be aiming at a block").not.toBe("");
 
+    // The contract froze a TOOL rule alongside the break times: some blocks
+    // cannot be broken by bare hands at all. So this test has to know what
+    // it is looking at, because the CORRECT behaviour differs - and
+    // getting this wrong is how a test ends up asserting the WRONG thing.
+    const bareHandCanBreak = await page.evaluate(async () => {
+      const constants = await import("/src/core/constants.ts");
+      // The contract's id, not the HUD's capitalised label. The contract's
+      // functions are case-sensitive, so "Clay" would not match "clay" and
+      // canBreak() would wrongly say a trowel block is breakable by hand.
+      const handle = (
+        window as unknown as {
+          __blockforge?: { targetedKind(): string | null };
+        }
+      ).__blockforge;
+      const id = handle?.targetedKind();
+      if (!id) {
+        return false;
+      }
+      return constants.canBreak(id, null);
+    });
+
     // 1. A QUICK CLICK must not break it.
     await hold(page, 100);
     const afterClick = await page.evaluate(
@@ -80,16 +101,27 @@ test.describe("T70 guard: hold-to-break", () => {
     );
     expect(afterClick, "a quick click must not break the block").not.toBe("");
 
-    // 2. HOLDING must break it. 11 seconds covers every block in the table
-    //    (the slowest, voidstone, is 9s).
+    // 2. HOLDING. 11 seconds covers every block in the table (the slowest,
+    //    voidstone, is 9s).
     await hold(page, 11_000);
 
-    // The block is gone, so the player is now aiming at whatever is behind
-    // it, or at nothing. Either way the readout is no longer the same.
     const afterHold = await page.evaluate(
       () => document.querySelector(".bf-target")?.textContent ?? "",
     );
-    expect(afterHold, "holding must break the block").not.toBe(targeted);
+
+    if (bareHandCanBreak) {
+      // The block is gone, so the player is now aiming at whatever is
+      // behind it, or at nothing. Either way the readout is no longer the
+      // same.
+      expect(afterHold, "holding must break a block that bare hands can break").not.toBe(targeted);
+    } else {
+      // The block needs a tool the player does not have, so holding must
+      // NOT break it.
+      expect(
+        afterHold,
+        "a block that needs a tool must NOT be breakable by bare hands",
+      ).toBe(targeted);
+    }
   });
 
   test("the break progress readout exists and is hidden when idle", async ({ page }: { page: Page }) => {
@@ -119,9 +151,47 @@ test.describe("T70 guard: hold-to-break", () => {
       await page.waitForTimeout(600);
     }
 
-    // Start a hold on a hard block so the timer is running long enough to
-    // observe.
+    // Start a hold so the timer is running long enough to observe. This
+    // only shows a progress bar if the block CAN be broken with what the
+    // player is holding - the contract's tool rule means some blocks
+    // cannot be, and then the game says which tool is needed instead.
     await lookDown(page);
+    const canBreak = await page.evaluate(async () => {
+      const constants = await import("/src/core/constants.ts");
+      // The contract's id, not the HUD's capitalised label: the contract's
+      // functions are case-sensitive, so "Clay" would not match "clay".
+      const handle = (
+        window as unknown as {
+          __blockforge?: { targetedKind(): string | null };
+        }
+      ).__blockforge;
+      const id = handle?.targetedKind();
+      return id ? constants.canBreak(id, null) : false;
+    });
+
+    if (!canBreak) {
+      // The game must explain what is needed rather than starting a timer
+      // that can never finish.
+      await page.evaluate(() => {
+        const handle = (
+          window as unknown as { __blockforge?: { setBreaking(h: boolean): void } }
+        ).__blockforge;
+        handle?.setBreaking(true);
+      });
+      await page.waitForTimeout(500);
+      const message = await page.evaluate(
+        () => document.querySelector("#blockforge-hud .bf-message")?.textContent ?? "",
+      );
+      await page.evaluate(() => {
+        const handle = (
+          window as unknown as { __blockforge?: { setBreaking(h: boolean): void } }
+        ).__blockforge;
+        handle?.setBreaking(false);
+      });
+      expect(message, "the game must say which tool is needed").toMatch(/needs a/);
+      return;
+    }
+
     await page.evaluate(() => {
       const canvas = document.querySelector("canvas");
       canvas?.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));

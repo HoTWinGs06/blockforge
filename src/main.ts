@@ -10,14 +10,14 @@
  * synthesised (src/render/audio.ts).
  */
 
-import { BlockId, type ChunkKey, type PlayerState, type Vec3 } from "./core/types.js";
-import { CHUNK_SIZE_Y, breakSeconds } from "./core/constants.js";
+import { BlockId, type ChunkKey, type PlayerState, type ToolSpec, type Vec3 } from "./core/types.js";
+import { CHUNK_SIZE_Y, breakSecondsWith, requiredToolFor } from "./core/constants.js";
 import {
   moveWithCollisions,
   stepPhysics,
   type SolidWorld,
 } from "./core/physics.js";
-import { Hud, SoundBoard, TitleScreen, WorldRenderer, chunkKeyOf } from "./render/index.js";
+import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
 
 /**
  * The shape the render layer needs from the engine.
@@ -273,12 +273,30 @@ export class Game {
     }
     // A fresh press starts the hold. The block's HARDNESS comes from the
     // frozen core table, keyed by the block kind at that position.
+    //
+    // breakSecondsWith(), NOT breakSeconds(): the contract froze a TOOL
+    // rule alongside the break times. Some blocks cannot be broken by bare
+    // hands at all - they need a mattock, a billhook, a trowel or a maul -
+    // and breakSecondsWith() returns -1 for those, and applies the tool's
+    // multiplier when there is a tool. Using the bare breakSeconds() would
+    // quietly let the player break ironveil with their fists, which is
+    // exactly the kind of contract violation this project exists to prevent.
     const kind = this.engine.blockAt(hit.x, hit.y, hit.z);
+    const total = breakSecondsWith(String(kind), this.heldTool());
+    if (total < 0) {
+      // The block cannot be broken with what the player is holding. Say so
+      // rather than starting a timer that will never finish.
+      this.message = `${blockLabel(kind)} needs a ${requiredToolFor(String(kind))}`;
+      this.breakState = null;
+      this.sound.play("deny");
+      return;
+    }
+    this.message = null;
     if (!this.breakState || this.breakState.key !== this.keyOf(hit)) {
       this.breakState = {
         key: this.keyOf(hit),
         elapsed: 0,
-        total: breakSeconds(String(kind)),
+        total,
       };
     }
   }
@@ -395,6 +413,19 @@ export class Game {
    */
   private horizontalSpeed(): number {
     return Math.hypot(this.velocity.x, this.velocity.z);
+  }
+
+  /**
+   * The tool the player is holding, or null for bare hands.
+   *
+   * The INVENTORY is M3 content and does not exist yet, so this is always
+   * null - which means only the blocks the contract lets bare hands break
+   * are breakable. That is the honest state: the tool rule is real, and the
+   * tools to satisfy it have not been crafted yet. When the inventory lands,
+   * this reads the selected hotbar slot.
+   */
+  private heldTool(): ToolSpec | null {
+    return null;
   }
 
   /** How far through the break the player is, from 0 to 1, or null. */
@@ -532,6 +563,10 @@ export class Game {
         this.yaw += yawDelta;
       },
       targeted: () => this.pickBlock(),
+      targetedKind: () => {
+        const at = this.pickBlock();
+        return at ? this.engine.blockAt(at.x, at.y, at.z) : null;
+      },
       setBreaking: (holding: boolean): void => {
         this.breaking = holding;
         if (holding) {
@@ -585,6 +620,15 @@ export interface GameHandle {
   look(pitchDelta: number, yawDelta?: number): void;
   /** The block the player is currently aiming at, if any. */
   targeted(): { x: number; y: number; z: number } | null;
+  /**
+   * The KIND of block the player is aiming at, as the contract's id.
+   *
+   * The HUD shows a capitalised label for the player, but the contract's
+   * ids are lower case, and the contract's functions are case-sensitive -
+   * so a test that reads the label and passes it to canBreak() would get
+   * the wrong answer. This is the real id.
+   */
+  targetedKind(): BlockId | null;
   /** Start or stop holding the break button. */
   setBreaking(holding: boolean): void;
   /** How far through the current break the player is, 0..1, or null. */

@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { BREAK_TIME_SECONDS, breakSeconds } from "../src/core/constants.js";
+import {
+  BREAK_TIME_SECONDS,
+  breakSeconds,
+  breakSecondsWith,
+  canBreak,
+  requiredToolFor,
+} from "../src/core/constants.js";
 import { BlockId } from "../src/core/types.js";
+import { TOOL_SPECS } from "../src/core/constants.js";
 
 /**
  * T70 GUARD: every block must have its own break time, and the times must be
@@ -64,5 +71,73 @@ describe("T70: every block has its own break time", () => {
       }
       expect(seconds, `${id} must take a measurable amount of time`).toBeGreaterThan(0);
     }
+  });
+});
+
+
+/**
+ * The TOOL RULE, which the contract froze alongside the break times.
+ *
+ * This matters to the renderer directly: the game uses breakSecondsWith(),
+ * not breakSeconds(), so that bare hands cannot break a block that needs a
+ * tool. If the game used the bare table, the player could break ironveil
+ * with their fists - a silent contract violation.
+ */
+describe("T70: the tool rule", () => {
+  it("some blocks cannot be broken by bare hands at all", () => {
+    // The whole point of tools. If every block were breakable by hand the
+    // rule would be vacuous.
+    const needsTool = Object.values(BlockId).filter(
+      (id) => id !== BlockId.Air && requiredToolFor(id) !== null,
+    );
+    expect(needsTool.length, "some blocks must require a tool").toBeGreaterThan(0);
+
+    for (const id of needsTool) {
+      expect(canBreak(id, null), `${id} must not be breakable by bare hands`).toBe(false);
+    }
+  });
+
+  it("breakSecondsWith returns -1 when the block cannot be broken", () => {
+    const id = Object.values(BlockId).find(
+      (b) => b !== BlockId.Air && requiredToolFor(b) !== null,
+    );
+    expect(id).toBeDefined();
+    expect(breakSecondsWith(String(id), null)).toBe(-1);
+  });
+
+  it("the right tool makes the block breakable, and faster", () => {
+    const id = Object.values(BlockId).find(
+      (b) => b !== BlockId.Air && requiredToolFor(b) !== null,
+    );
+    expect(id).toBeDefined();
+    const kind = requiredToolFor(id!);
+    expect(kind).not.toBeNull();
+
+    // A tool of the right kind, from the frozen table.
+    const tool = TOOL_SPECS.find((spec) => spec.kind === kind)!;
+    expect(canBreak(id!, tool)).toBe(true);
+    // The tool's multiplier is less than or equal to 1 for a tier-1 tool on
+    // most blocks, and the contract says lower is faster.
+    expect(breakSecondsWith(String(id), tool)).toBeGreaterThan(0);
+  });
+
+  it("the wrong tool still cannot break it", () => {
+    const id = Object.values(BlockId).find(
+      (b) => b !== BlockId.Air && requiredToolFor(b) !== null,
+    );
+    expect(id).toBeDefined();
+    const kind = requiredToolFor(id!);
+    const wrong = TOOL_SPECS.find((spec) => spec.kind !== kind)!;
+    expect(canBreak(id!, wrong)).toBe(false);
+    expect(breakSecondsWith(String(id), wrong)).toBe(-1);
+  });
+
+  it("a block that needs no tool is breakable by hand, at the bare time", () => {
+    const id = Object.values(BlockId).find(
+      (b) => b !== BlockId.Air && requiredToolFor(b) === null,
+    );
+    expect(id).toBeDefined();
+    expect(canBreak(id!, null)).toBe(true);
+    expect(breakSecondsWith(String(id!), null)).toBe(breakSeconds(String(id!)));
   });
 });
