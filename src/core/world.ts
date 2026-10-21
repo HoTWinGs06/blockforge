@@ -127,16 +127,41 @@ export function createChunk(key: ChunkKey): Chunk {
 }
 
 /**
- * Index of a block inside a chunk, without the range check of `blockIndex`.
- * Callers are responsible for the bounds; used on hot paths.
+ * True when the coordinates name a block inside a chunk.
+ *
+ * A block coordinate is an integer in [0, 16) x [0, 256) x [0, 16). A
+ * fractional coordinate names no block, so it is out of range as well.
+ */
+function isInsideChunk(x: number, y: number, z: number): boolean {
+  return (
+    Number.isInteger(x) &&
+    Number.isInteger(y) &&
+    Number.isInteger(z) &&
+    x >= 0 &&
+    x < CHUNK_SIZE_X &&
+    y >= 0 &&
+    y < CHUNK_SIZE_Y &&
+    z >= 0 &&
+    z < CHUNK_SIZE_Z
+  );
+}
+
+/**
+ * Index of a block inside a chunk.
+ *
+ * The same guard as the frozen `blockIndex`: an out-of-range coordinate
+ * throws `RangeError` instead of silently aliasing onto another block's
+ * slot. There is deliberately NO unchecked variant - `getBlock` and
+ * `setBlock` are the tolerant surface, they check first and answer air or
+ * ignore the write.
  */
 export function chunkIndex(x: number, y: number, z: number): number {
-  return x + CHUNK_SIZE_X * (z + CHUNK_SIZE_Z * y);
+  return blockIndex(x, y, z);
 }
 
 /** Read a block. Out-of-range coordinates read as air. */
 export function getBlock(chunk: Chunk, x: number, y: number, z: number): number {
-  if (x < 0 || x >= CHUNK_SIZE_X || y < 0 || y >= CHUNK_SIZE_Y || z < 0 || z >= CHUNK_SIZE_Z) {
+  if (!isInsideChunk(x, y, z)) {
     return AIR_ORDINAL;
   }
   return chunk.blocks[chunkIndex(x, y, z)] ?? AIR_ORDINAL;
@@ -150,7 +175,7 @@ export function setBlock(
   z: number,
   id: BlockId,
 ): void {
-  if (x < 0 || x >= CHUNK_SIZE_X || y < 0 || y >= CHUNK_SIZE_Y || z < 0 || z >= CHUNK_SIZE_Z) {
+  if (!isInsideChunk(x, y, z)) {
     return;
   }
   chunk.blocks[chunkIndex(x, y, z)] = blockOrdinal(id);

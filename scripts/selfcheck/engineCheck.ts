@@ -13,11 +13,12 @@
  */
 
 import { raycast, placementCell } from "../../src/core/raycast.js";
-import { World } from "../../src/core/world.js";
+import { World, chunkIndex, createChunk, getBlock, setBlock } from "../../src/core/world.js";
 import { stepPhysics, bodyAabb, collides, solidWorldFromBlocks } from "../../src/core/physics.js";
 import { fbm2 } from "../../src/core/noise.js";
 import { createRng } from "../../src/core/rng.js";
 import { BlockId, SOLID_BLOCKS } from "../../src/core/types.js";
+import { CHUNK_SIZE_Y, blockIndex } from "../../src/core/constants.js";
 
 let failures = 0;
 
@@ -208,6 +209,65 @@ const world = {
   }
   check("a body falling with a huge dt lands on the floor", landed, `y=${y}`);
   check("the body did not fall through the floor", Math.abs(y - 1) < 1e-6, `y=${y}`);
+}
+
+// 10. chunkIndex() must not bypass the frozen blockIndex() guard (E3).
+// An unchecked index aliases: chunkIndex(16,0,0) used to return 16, the
+// storage slot of block (0,0,1), so an out-of-range x silently wrote into
+// a different block's slot.
+{
+  const threwForX = (() => {
+    try {
+      chunkIndex(16, 0, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  check("chunkIndex throws for an out-of-range x", threwForX);
+
+  const threwForY = (() => {
+    try {
+      chunkIndex(0, CHUNK_SIZE_Y, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  check("chunkIndex throws for an out-of-range y", threwForY);
+
+  const threwForNegative = (() => {
+    try {
+      chunkIndex(-1, 0, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  check("chunkIndex throws for a negative coordinate", threwForNegative);
+
+  const threwForFractional = (() => {
+    try {
+      chunkIndex(1.5, 0, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+  check("chunkIndex throws for a fractional coordinate", threwForFractional);
+
+  // The in-range answer is unchanged, and it is the frozen one.
+  check(
+    "chunkIndex still agrees with the frozen blockIndex",
+    chunkIndex(1, 2, 3) === blockIndex(1, 2, 3),
+  );
+
+  // The tolerant surface is unchanged: out of range reads air, and an
+  // out-of-range write changes nothing.
+  const chunk = createChunk({ cx: 0, cz: 0 });
+  check("getBlock reads air outside the chunk", getBlock(chunk, 16, 0, 0) === 0);
+  setBlock(chunk, 16, 0, 0, BlockId.Rubble);
+  check("setBlock outside the chunk writes nothing", getBlock(chunk, 0, 0, 1) === 0);
 }
 
 if (failures > 0) {
