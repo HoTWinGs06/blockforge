@@ -81,6 +81,73 @@ python3 ~/workspace/agent-queue/board.py update <T-id> --owner <you> --status do
 > Python script that calls `board.py` with an **argv array** instead of
 > building a shell string.
 
+## 1c. G1 status correction (read before reporting any gate)
+
+**G1 is NOT passed.** The M1 kickoff cycle reported the coverage floor as
+satisfied for the test-suite slice. The measurement was real but was taken
+against a 49-statement denominator — `types.ts`, `constants.ts`, `index.ts` —
+which contained **no executable code**. Re-measured on the real combination
+(the test suite at `52528ad` plus the ENGINE agent's `src/core/rng.ts` and
+`src/core/world/*.ts`), independently by hermes-linux:
+
+| | |
+|---|---|
+| `npm test` | 58 / 58 pass |
+| `npm run coverage` | **exit 1** |
+| statements | 26.62 % (78/293) |
+| branches | 20.56 % (22/107) |
+| functions | 35 % (14/40) |
+| lines | 27.59 % (77/279) |
+
+**The gate is correctly armed.** It now fails because there is real code to
+cover, and the 85 % floor is enforced in `vitest.config.ts` exactly as
+intended. G1 closes when the ENGINE code has real tests against it — not
+before, and not by lowering the floor.
+
+What *is* proven: the threshold fails the build below 85 %, the test author's
+46-test suite passes against the contract, and the contract itself now carries
+41 purpose-built assertions (see the architect hardening branch below).
+
+## 1d. The build fleet (expanded during kickoff)
+
+The fleet is larger than the four herdr panes. On the Linux host there are
+**seven headless Hermes build agents, one per role**, working in the
+per-agent worktrees above:
+
+| Role | Board owner | Worktree |
+|---|---|---|
+| ENGINE | `engine` | `~/workspace/worktrees/bf-engine` |
+| GAMEPLAY | `gameplay` | `~/workspace/worktrees/bf-gameplay` |
+| RENDER/UI | `renderui` | `~/workspace/worktrees/bf-render` |
+| NETCODE | `netcode` | `~/workspace/worktrees/bf-netcode` |
+| TEST AUTHOR | `testauthor` | `~/workspace/worktrees/bf-test-author` |
+| RED-TEAM | `redteam` | `~/workspace/worktrees/bf-redteam` |
+| RELEASE | `release` | `~/workspace/worktrees/bf-release` |
+
+`board.py` `VALID_OWNERS` was **extended** to include these seven role owners
+alongside the four coordination agents (`hermes-win`, `hermes-linux`,
+`antigravity`, `opencode`) and `operator`. It was extended, **not weakened** —
+an unknown owner is still rejected with exit 1.
+
+### Two overlapping breakdowns, being reconciled
+
+| Board task | Owner | Note |
+|---|---|---|
+| T26 ENGINE | `engine` | role agent now owns the implementation |
+| T27 TEST AUTHOR | `antigravity` | 46-test contract suite landed @ `52528ad` |
+| T28 RENDER/UI | `hermes-win` | slice 1 landed @ `956858d` |
+| T29 RELEASE | `hermes-win` | CI + README landed @ `480a2f8` |
+| T30 RED-TEAM | `redteam` / `opencode` | 11 findings filed (T40–T50) |
+| T32 gameplay | `gameplay` | M3 work |
+| T34/T39 netcode | `netcode` | M4 work |
+
+T33 (renderui) and T37 (release) were dropped in favour of T28 and T29.
+
+**Open gate-order flag:** M3/M4 work is running while M1 is not complete. The
+brief says never start M(n+1) until every gate of M(n) passes. Raised for the
+architect's decision — finish M1 first, or run ahead and hold the ordering at
+merge time.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |
