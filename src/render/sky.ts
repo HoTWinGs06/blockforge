@@ -11,6 +11,8 @@
 
 import * as THREE from "three";
 import { FOG_FAR } from "./viewDistance.js";
+import { CloudLayer } from "./clouds.js";
+import { WORLD_SEED } from "./engineBridge.js";
 
 /** The sky's palette, top to horizon. BlockForge's own colours. */
 const SKY_TOP = "#3f6fb0";
@@ -56,7 +58,10 @@ export function buildSkyCanvas(): HTMLCanvasElement {
  * placed in the same direction as the scene's directional light, so the
  * bright spot in the sky and the lit side of the blocks agree.
  */
-export function buildSky(sunDirection: THREE.Vector3): THREE.Group {
+export function buildSky(
+  sunDirection: THREE.Vector3,
+  seed: number = WORLD_SEED,
+): THREE.Group {
   const group = new THREE.Group();
   group.name = "sky";
 
@@ -94,6 +99,11 @@ export function buildSky(sunDirection: THREE.Vector3): THREE.Group {
   sun.position.copy(dir);
   sun.scale.setScalar(90);
   group.add(sun);
+
+  // The clouds. They are seeded from the WORLD seed, so the sky in a world
+  // is the same in every client, and they drift by a tick counter rather
+  // than being re-randomised.
+  group.add(new CloudLayer(seed).group);
 
   return group;
 }

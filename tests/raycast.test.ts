@@ -144,6 +144,12 @@ describe("PRIORITY 3: DDA raycasting (src/core/raycast.ts)", () => {
             isSolid,
           );
           if (hit === null) return;
+          // A ray that STARTS INSIDE a block terminates where it started
+          // rather than at the block's face, so it reports a ZERO normal -
+          // there is no face it entered through, so there is nothing to
+          // point at. The engine's own behaviour for that case is pinned by
+          // "a ray starting inside a block terminates" below.
+          if (hit.distance === 0) return;
           const { normal } = hit;
           const magnitude = Math.abs(normal.x) + Math.abs(normal.y) + Math.abs(normal.z);
           expect(magnitude).toBe(1);
@@ -184,6 +190,23 @@ describe("PRIORITY 3: DDA raycasting (src/core/raycast.ts)", () => {
             isSolid,
           );
           if (hit === null) return;
+          // A ray that STARTS INSIDE a block is a different case, and it is
+          // excluded here on purpose. The engine reports that block as the
+          // hit with a zero normal and distance 0 - the traversal terminates
+          // where it started rather than running to the block's face - so
+          // the placement cell is the block itself, which is not air.
+          //
+          // This is not a hole in the property. There is no valid placement
+          // for a ray that starts inside a solid: the player is already
+          // inside it. The engine's own behaviour is pinned by the
+          // "a ray starting inside a block terminates" case below, which
+          // asserts the hit, the distance and the cell.
+          //
+          // Without this exclusion the property is FALSE for exactly one
+          // input in 9261 - the origin cell - and it fails about one run in
+          // twenty, with a random seed, which is the worst kind of flake.
+          // I enumerated all 9261 inputs to confirm it is the ONLY one.
+          if (hit.distance === 0) return;
           const cell = placementCell(hit);
           expect(world.blockAt(cell.x, cell.y, cell.z)).toBe(BlockId.Air);
         },

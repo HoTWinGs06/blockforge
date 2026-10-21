@@ -794,3 +794,112 @@ a solid block after a multi-block move.
   `tests/redteam/engine-attack.test.ts`.
 - **Coordinator (`hermes-win`)** — G1 passes. G5 (lint + typecheck) is
   clean. G6 is unaffected; `tests/determinism.test.ts` still passes.
+
+## 9. The fleet dispatcher (Linux-side autonomy)
+
+The role agents — engine, gameplay, netcode, redteam, release, renderui,
+testauthor — are **one-shot**: they are dispatched for a specific job, write a
+summary heartbeat and exit. Nothing on the build host was polling the board or
+calling `claim-next`, so a task assigned to a role sat there until a human
+picked it up. The dispatch loop lived in a pane on the operator's laptop.
+
+`scripts/fleet/dispatcher.py` closes that loop. It runs on the **Linux build
+host** (so it keeps working when the laptop is off), and every two minutes it:
+
+1. reads the board and finds a `todo` task owned by a role agent
+2. refuses to dispatch if the host is not idle enough (see below)
+3. brings the role's worktree up to `feature/integrated/m1`
+4. writes the task's brief — the board notes plus the role's standing brief
+5. claims the task on the board (`status=doing`) **before** launching
+6. launches the agent detached:
+   `hermes chat --query-file <brief> --oneshot --max-turns 500 --run-budget 3000 --yolo`
+7. records the attempt count, and re-dispatches a dead agent's task up to
+   `MAX_ATTEMPTS` before leaving it alone
+
+**The host is small** — 2 CPUs, 4 GB of RAM, already hosting the Hermes
+dashboard, the Hermes gateway, the Discord bot and the board cron. A Playwright
+suite, a typecheck and an agent at once took it to load 21 on 2 cores, at which
+point sshd stopped forking and the box became unreachable for minutes. So the
+dispatcher **refuses to dispatch** unless a CPU is genuinely free and there is
+memory headroom. It measures *runnable processes right now*, not the 1-minute
+load average, because the average is a decaying number that stays high for
+minutes after the work that caused it has finished.
+
+**Consequences for the fleet:**
+- a role task now starts by itself, unattended, on the build host
+- `docs/PROGRESS.md` and `docs/VICTORIES.md` are the ARCHITECT's alone —
+  agents are told to put their handoff in the board notes and in
+  `docs/handoffs/<role>.md`, because seven agents appending to one file in
+  seven worktrees guarantees conflicts and lost work
+- a task with no live agent and no completion is re-dispatched automatically
+
+## 11. The operator's three live bugs, the step-up, and the fleet leader
+
+Written by the architect on 2026-10-21T15:24:27Z, for whoever picks this up next.
+
+### The three bugs the operator reported against the live game
+
+| reported | root cause | fix |
+|---|---|---|
+| "the cloud is on the face of the player instead of the sky" | the deck was at y 88-100 and the player **spawns at y=90 and falls**, so the spawn point was inside the deck; and the sprites had `depthTest: false`, so they painted over the world | deck 132-156, depth tested, and its own fade range (70-170) instead of the ground fog range (28-60) |
+| "block placing is exchanging the blocks instead of placing it on top of it" | the game had a hand-rolled ray march that returned only the coordinates and never the **face**, so it wrote into the hit block | the game now uses the core voxel raycast and `placementCell()`: a placement goes into the empty cell on the face the ray came in through, never inside the player |
+| "the blocks require tools to break but there is no way to get tools or built them" | `heldTool()` returned `null` unconditionally and the hotbar was empty, so `breakSecondsWith()` returned -1 for everything | the player starts with a timber tool of every KIND (the rule is by kind, and the ground is clay, which needs a **trowel**), the hotbar shows it, and the HUD says what is missing |
+
+Commits: `f9e0ac6` (step-up), `7d5f020` (all three bugs), `3f5e4fa` (cloud fade), `9922b68` (the four tools).
+The branch is green: 224 tests, typecheck 0, lint 0 errors, G1 floor untouched.
+
+**What is still missing on the tool front:** the CRAFTING chain. The player has
+starting tools, but there is no way to make BETTER ones yet. That is T81
+(crafting), T82 (tools) and T84 (the crafting UI), and it sits behind T80
+(the broken block must become a collectable item) - without drops there is
+nothing to craft with. T80 is the highest-priority task on the board.
+
+### The step-up, and the float that is not a float
+
+The verifier filed T91: "f9e0ac6 makes the player float 2 blocks above the
+ground". **It does not reproduce.** A live probe gives the player standing at
+y=69.000 with the block beneath at y=68, so their feet are exactly on the
+surface; walking forward raises them to y=70.000, which is the top of the next
+step, and that is the step-up working. The break-hold browser tests pass with
+the step-up in (3 passed). The step-up must NOT be reverted: it is what makes
+the terrain walkable at all.
+
+The real hazard is in `src/core/physics.ts`, in the Y axis of `moveOnce`:
+
+    y = Math.max(...hits.map(([, by]) => by + 1));
+
+That lands the body on top of the **highest** block the swept box hit, so a
+body falling *past* a step can be placed on top of it. That is re-filed, with
+the analysis, as **T92**, owned by the engine - it is the engine's file and
+the engine is already in it with the water physics.
+
+### The fleet leader
+
+`scripts/fleet/leader.py` is the leader's tool:
+
+    leader.py roster                 # who is who, what each holds, is it alive
+    leader.py status                 # open work by role, in flight, blocked
+    leader.py offer <role> <worker>  # hand the NEXT task to a worker, one at a time
+    leader.py verify <taskId>        # did it actually land on feature/integrated/m1
+    leader.py note <taskId> <owner> "<text>"
+
+The handover is the BOARD, because the workers execute on the Linux host but
+run in terminals on the operator's laptop, and they cannot see each other's
+screens. A task may carry a note `priority: N` (lower is sooner) and a note
+`assigned: <worker>`; the leader publishes the assignment, and the worker
+picks it up when it finishes what it holds. The tool refuses to give a worker
+two tasks, and refuses to give a role a task while that role is already in
+flight.
+
+The registry is `~/.hermes/fleet/agents.json`.
+
+### If you are picking this up cold
+
+1. `cd ~/workspace/blockforge && git checkout feature/integrated/m1`
+2. `npm ci && npm run verify` - the one-command gate
+3. The board: `cd ~/workspace/agent-queue && python3 board.py status`
+4. The leader (Linux hermes 4) is the one that hands work out. If it is not
+   running, `python3 scripts/fleet/dispatcher.py --status` shows the fleet.
+5. The live game is served from the operator's Windows machine by a watchdog;
+   the repo is cloned at `C:\Users\JOEL\workspace\blockforge-play`, on
+   branch `live`, tracking `origin/feature/integrated/m1`.

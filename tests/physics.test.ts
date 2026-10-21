@@ -176,13 +176,19 @@ describe("PRIORITY 3: AABB collision and gravity (src/core/physics.ts)", () => {
       readonly expected: number;
     }[] = [
       {
-        // Wall on -X, at x=0. The body stops with minX exactly 1.
+        // Wall on -X, at x=0. The body stops with minX flush against the
+        // wall's face at x=1, so x = 1 + PLAYER_HALF_WIDTH.
+        //
+        // Started at x=0.5, clear of the wall's column (x=0 to 1). The
+        // body used to start at x=1, which put its AABB (x=0.70 to x=1.30)
+        // inside that column - the same invalid start state as the -Z
+        // case, and the same reason it could never fail.
         blocks: [
           [0, 0, 0],
           [0, 1, 0],
           [0, 2, 0],
         ],
-        from: { x: 1, y: 1, z: 0.5 },
+        from: { x: 0.5, y: 1, z: 0.5 },
         delta: { x: -1, y: 0, z: 0 },
         axis: "x",
         expected: 1 + PLAYER_HALF_WIDTH,
@@ -211,12 +217,25 @@ describe("PRIORITY 3: AABB collision and gravity (src/core/physics.ts)", () => {
         expected: 2 - PLAYER_HALF_WIDTH,
       },
       {
-        // Wall on -Z, at z=2. The body stops with maxZ exactly 3.
+        // Wall on -Z, at z=2. The body approaches from +Z and stops with
+        // its minZ flush against the wall's face at z=3, so
+        // z = 3 + PLAYER_HALF_WIDTH.
+        //
+        // The body starts at z=3.5, NOT z=3. This case used to start the
+        // body at z=3, which put its AABB (z=2.70 to z=3.30) INSIDE the
+        // wall occupying z=2 to z=3 - an invalid start state. The old
+        // physics "passed" it only because a body that already overlaps
+        // trivially collides and never moves, so the assertion was
+        // comparing a computed position against the body's own starting
+        // position. The test was green and asserted nothing.
+        //
+        // Starting clear of the wall makes it the exact mirror of the +Z
+        // case above, and the expected value is unchanged.
         blocks: [
           [0, 0, 2],
           [0, 1, 2],
         ],
-        from: { x: 0.5, y: 1, z: 3 },
+        from: { x: 0.5, y: 1, z: 3.5 },
         delta: { x: 0, y: 0, z: -1 },
         axis: "z",
         expected: 3 + PLAYER_HALF_WIDTH,
@@ -439,5 +458,81 @@ describe("PRIORITY 3: AABB collision and gravity (src/core/physics.ts)", () => {
       if (result.onGround) break;
     }
     expect(position.y).toBe(1);
+  });
+});
+
+describe("the step-up ledge", () => {
+  // A floor under the body, so the body is standing on something. A body in
+  // mid-air must not step up - that would be climbing a wall.
+  const floor: readonly (readonly [number, number, number])[] = [
+    [0, -1, 0],
+    [0, -1, 1],
+    [1, -1, 0],
+    [1, -1, 1],
+  ];
+
+  it("a one-block ledge is walked up, not walked into", () => {
+    const world = solidWorldFromBlocks([...floor, [1, 0, 0]]);
+    const result = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      world,
+    );
+    // The body is ON the ledge, not stopped in front of it.
+    expect(result.position.x).toBeCloseTo(1.5, 10);
+    expect(result.collided).toBe(false);
+    expect(collides(bodyAabb(result.position), world)).toBe(false);
+  });
+
+  it("a two-block ledge is not walked up", () => {
+    const world = solidWorldFromBlocks([...floor, [1, 0, 0], [1, 1, 0]]);
+    const result = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      world,
+    );
+    // Stopped flush against the ledge, and still on the ground.
+    expect(result.collided).toBe(true);
+    expect(result.position.x).toBeCloseTo(1 - PLAYER_HALF_WIDTH, 10);
+    expect(collides(bodyAabb(result.position), world)).toBe(false);
+  });
+
+  it("a body that is not grounded does not step up", () => {
+    // THE ANTI-WALL-CLIMB RULE. A body in mid-air must not walk up a
+    // ledge, or a player could climb any wall by jumping into it. The
+    // engine requires the body to be standing on something first.
+    //
+    // The body starts at y=0.5 with nothing beneath it, so its AABB
+    // (y=0.50 to y=2.30) genuinely overlaps the ledge at y=0 to y=1 and
+    // the ledge genuinely blocks the path. It must be stopped.
+    const world = solidWorldFromBlocks([[1, 0, 0]]);
+    const result = moveWithCollisions(
+      { x: 0.5, y: 0.5, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      world,
+    );
+    // Stopped in front of the ledge, not on top of it.
+    expect(result.collided).toBe(true);
+    expect(result.position.x).toBeCloseTo(1 - PLAYER_HALF_WIDTH, 10);
+    expect(collides(bodyAabb(result.position), world)).toBe(false);
+  });
+
+  it("an upward move passes over the ledge rather than using the step", () => {
+    // A move that is itself upward does not need the step-up: the body
+    // rises above the block and passes over it. The step-up is the
+    // mechanism for a move that is NOT upward, which is why the engine's
+    // first rule is about the movement delta.
+    const world = solidWorldFromBlocks([...floor, [1, 0, 0]]);
+    const result = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 1, z: 0 },
+      world,
+    );
+    expect(result.position.x).toBeCloseTo(1.5, 10);
+    expect(result.position.y).toBeCloseTo(2, 10);
   });
 });
