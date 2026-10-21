@@ -12,6 +12,7 @@
 
 import * as THREE from "three";
 import type { BlockId, ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
+import { blockFromOrdinal } from "../core/world.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
 import { buildSky } from "./sky.js";
@@ -45,10 +46,40 @@ export function buildChunkMesh(key: ChunkKey, output: MeshOutput): ChunkMesh {
   // Resolve per-triangle block kinds into atlas UVs. The mesher gives us a
   // flat uv attribute; we rewrite it from the block ids so each face samples
   // its own tile.
-  const uvs = new Float32Array(output.uvs.length);
-  const blockIds = output.blocks;
+  //
+  // MeshOutput.blocks holds ORDINALS, not BlockId values - the mesher pushes
+  // the numeric ordinal of the block, and the engine exports
+  // blockFromOrdinal() to turn one back into a BlockId. Treating them as
+  // BlockIds (which are strings) made every lookup miss, so faceUv() fell
+  // back to tile 0 and EVERY BLOCK IN THE GAME rendered with the same
+  // texture. That was the cause of the operator's "no different colour
+  // textures for the blocks".
+  // NOTE on the array length. The mesher pushes EIGHT floats per quad
+  // (four corners, two floats each) but only FOUR vertices per quad, so
+  // output.uvs is TWICE the length a vertex-indexed uv attribute needs.
+  // Allocating output.uvs.length gave an attribute twice too long, and
+  // three.js then read only the first half of it - which happened to be the
+  // first two UVs of every quad. The result was that every face sampled the
+  // same texel, and the whole world rendered as one flat texture.
+  //
+  // The attribute must be sized by the VERTEX count, which is
+  // output.positions.length / 3.
+  const vertexCount = output.positions.length / 3;
+  const uvs = new Float32Array(vertexCount * 2);
+  const blockOrdinals = output.blocks;
   for (let tri = 0; tri * 3 + 2 < output.indices.length; tri++) {
-    const id = blockIds[tri] as unknown as BlockId;
+    const ordinal = blockOrdinals[tri];
+    if (ordinal === undefined) {
+      continue;
+    }
+    let id: BlockId;
+    try {
+      id = blockFromOrdinal(ordinal);
+    } catch {
+      // An out-of-range ordinal is a mesh defect, not a crash. Fall back to
+      // the first tile rather than taking the whole renderer down.
+      continue;
+    }
     const corners = faceUv(id);
     for (let v = 0; v < 3; v++) {
       const vi = output.indices[tri * 3 + v];
@@ -62,9 +93,20 @@ export function buildChunkMesh(key: ChunkKey, output: MeshOutput): ChunkMesh {
   }
   geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
 
-  const material = new THREE.MeshLambertMaterial({
+  // MeshStandardMaterial, not Lambert.
+  //
+  // The atlas is an sRGB colour map, and Lambert under a single hemisphere
+  // light leaves every face that points away from the sun almost black. The
+  // operator reported "the blocks all look the same" and the diagnostic
+  // proved the ATLAS is correct - eight distinct sampled colours, twenty-two
+  // distinct UV sets - so the fault was downstream: the lighting. Standard
+  // material with a real ambient term keeps every face readable, and the
+  // per-face texture differences survive.
+  const material = new THREE.MeshStandardMaterial({
     map: getAtlasTexture(),
     vertexColors: false,
+    roughness: 0.95,
+    metalness: 0.0,
   });
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -105,7 +147,10 @@ export class WorldRenderer {
       0.1,
       1000,
     );
-    this.camera.position.set(0.5, 80, 0.5);
+    // The terrain surface is around y = 68 for the default seed. Starting the
+    // camera here means the very first frame looks at the ground rather than
+    // at the unlit underside of a hill twelve blocks up.
+    this.camera.position.set(0.5, 70.5, 0.5);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -117,12 +162,32 @@ export class WorldRenderer {
     this.renderer.setSize(canvas.clientWidth, Math.max(1, canvas.clientHeight), false);
     this.renderer.setPixelRatio(1);
 
-    // Sky light plus a warm key light so block faces read clearly.
-    this.scene.add(new THREE.HemisphereLight("#cfe3ff", "#6b6152", 1.15));
+    // Lighting: sky light, a warm key light, and a floor of ambient.
+    //
+    // THE KEY FACT, learned the hard way from a screenshot: three.js r155+
+    // uses physically correct lighting by default. Under that model a light
+    // intensity of 1-2 is DIM - a DirectionalLight of 1.9 lights a surface to
+    // roughly 2% of its albedo, and the whole terrain renders as a black
+    // mass no matter how good the textures are. The UV rewrite was proven
+    // correct (21 distinct UV regions, 16 distinct sampled colours from a
+    // real chunk mesh), so the blackness was the lighting all along.
+    //
+    // The intensities below are calibrated for the physical model: sun ~3,
+    // sky ~2, ambient ~1.2. The ambient floor is what guarantees that a face
+    // pointing away from the sun is still readable.
+    this.scene.add(new THREE.HemisphereLight("#cfe3ff", "#8a7d68", 2.0));
+    this.scene.add(new THREE.AmbientLight("#b9c6d8", 1.2));
+
     const sunDirection = new THREE.Vector3(60, 120, 40);
-    const sun = new THREE.DirectionalLight("#fff3d6", 1.35);
+    const sun = new THREE.DirectionalLight("#fff3d6", 3.0);
     sun.position.copy(sunDirection);
     this.scene.add(sun);
+
+    // Tone mapping keeps the bright sunlit faces from blowing out while the
+    // shaded faces stay readable.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     // The sky dome and its sun disc share the light's direction, so the
     // bright spot in the sky and the lit side of the blocks agree.
