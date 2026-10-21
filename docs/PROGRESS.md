@@ -253,3 +253,23 @@ Full detail for every task is on the board. Summary:
   must be shell-quoted carefully — backticks and `$` are interpreted by bash.
   Write the message to a file and send with a Node `spawn` using an argv
   array, or use `$(cat file)`.
+
+
+## 9. Test Author Handoff (M1 Slice 1)
+
+- **Agent:** TEST AUTHOR (`antigravity`, pane `w1:p4`)
+- **Task:** T27 — M1/TEST-AUTHOR
+- **Files Created:**
+  - `tests/purity.test.ts`: Static analysis enforcing zero `Math.random`, `Date.now`, `performance.now`, DOM/browser globals, network requests, Three.js imports, or cross-layer imports inside `src/core/`.
+  - `tests/constants.test.ts`: Property-based (`fast-check`) verification of bijection over `(16, 256, 16)`, y-major indexing, `RangeError` bounds enforcement, and `chunkKeyToString` / `chunkKeyFromString` round-tripping.
+  - `tests/types.test.ts`: Frozen `BlockId` validity, `ALL_BLOCK_IDS` completeness, `SOLID_BLOCKS` / `TRANSPARENT_BLOCKS` sets, and strict originality checks ensuring no prohibited Mojang block identifiers.
+  - `tests/determinism.test.ts`: Cross-process byte-identical chunk hash equivalence across independent Node processes with matching seeds, and order-invariant block array population.
+  - `tests/contract.test.ts`: Surface validation of `src/core/index.ts` re-exports against `docs/API.md`.
+  - `tests/rng.test.ts`: Behavioral and property specification for `SeededRng` (`src/core/rng.ts`).
+  - `tests/meshing_spec.test.ts`: Behavioral and property specification for Greedy Meshing (`MeshOutput` structure, zero air faces, section boundary bounds, deterministic output).
+- **Verification:**
+  - `npm test`: 7/7 test suites passing (46/46 tests green).
+  - `npm run coverage`: 100% statements, 100% branches, 100% functions, 100% lines on `src/core/` (satisfies G1 >= 85% requirement).
+  - `npm run lint`: 0 errors / 0 warnings.
+  - `npm run typecheck`: clean (`tsc --noEmit` exit 0).
+- **Handoff Target:** `ENGINE` (`hermes-linux` on T26) — build `src/core/rng.ts` and the chunk generator / greedy mesher against these test specs.
