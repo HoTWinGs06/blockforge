@@ -6,8 +6,14 @@
 
 **Project:** BlockForge — an original, unofficial Minecraft-inspired voxel sandbox.
 **Current milestone:** M1 — ENGINE
-**Last updated:** 2026-10-21 (M1 kickoff cycle)
-**Status:** M1 kickoff complete. Contract frozen, repo scaffolded, toolchain green.
+**Last updated:** 2026-10-21 (M1 ENGINE cycle 1 — engine landed)
+**Status:** **ENGINE LANDED.** The whole M1 engine is committed on
+`feature/engine/m1`: PRNG, noise, world generation, greedy mesher, physics,
+raycast, chunk store and worker pool. G3 (3.96 ms/chunk avg) and G6
+(identical hashes across fresh processes) both PASS. The TEST AUTHOR's
+suite (52528ad) is merged and passes 97/97. G1 is NOT closed: coverage is
+40.17% because the engine's new code has no tests against it yet — that is
+the TEST AUTHOR's remaining work, and the gate is correctly armed.
 
 ---
 
@@ -23,10 +29,374 @@
 | Toolchain | `package.json`, `tsconfig.json`, `vite.config.ts`, `vitest.config.ts`, `eslint.config.js` | All versions pinned exactly. No `^`. |
 | Layout | `src/{core,engine,render,gameplay,net}`, `server/`, `scripts/bench/`, `docs/` | Matches the repository contract exactly. |
 | Repo | `~/workspace/blockforge` (Linux host) | Git initialised, branch `main`. |
+| **Seeded PRNG** | `src/core/rng.ts` | `SeededRngImpl` — own splitmix32, no library. `fork()` is PURE (does not advance the parent), so subsystems fork in any order and still match. 32-bit state round-trips exactly through the frozen `RngState` (a `number`). |
+| **Value noise** | `src/core/noise.ts` | Hash-based 2D/3D value noise + fBm. A sample is a function of `(seed, x, y, z)` alone, so terrain is continuous across chunk borders. |
+| **World generation** | `src/core/world.ts` | Block metadata (ordinals, face rules), chunk storage helpers, terrain generator, `World` class. A chunk is a pure function of `(seed, chunkKey)`. |
+| **Greedy mesher** | `src/core/meshing.ts` | `meshSection(chunk, section, neighbours?)` and `meshChunk(chunk, neighbours?)`. Stable vertex order; `blocks.length === indices.length / 3`. |
+| **Physics** | `src/core/physics.ts` | AABB collision + gravity, axis-resolved, snapping to the surface it hit. Pure. |
+| **Raycast** | `src/core/raycast.ts` | DDA (Amanatides & Woo). Returns the hit block, the face normal, and the placement cell. Pure. |
+| **Chunk store** | `src/engine/chunkStore.ts` | Generation on demand, world-space block read/write, neighbour lookup for the mesher. Implements `SolidWorld` and `RaycastWorld`. |
+| **Worker pool** | `src/engine/workerPool.ts` | Chunk generation off the main thread. Injectable worker factory: real Web Workers in the browser, a plain function in Node. |
+| **Gate scripts** | `scripts/{determinism,bench,selfcheck}/` | G3 bench, G6 determinism proof, and the mesher/physics self-checks. All TypeScript, so they are typechecked and linted. |
 
-**Not yet done (do not assume otherwise):** no engine code, no renderer, no
-tests, no CI, no README, no GitHub repo. The public repo is created only
-after M1 and M2 gates pass.
+**Not yet done (do not assume otherwise):** the engine's new code has **no
+tests against it** — the TEST AUTHOR's suite only covers the frozen contract
+and the dormant specs. G1 is therefore **NOT** closed: coverage is 40.17%
+against an 85% floor. There is still no renderer, no CI, no README, no
+GitHub repo. The public repo is created only after M1 and M2 gates pass.
+
+### 1a. ENGINE contracts the downstream agents can rely on
+
+These are the conventions the engine guarantees. They are stated so the
+TEST AUTHOR can pin them and the RENDERER can consume them without guessing.
+
+**Mesher output** (`src/core/meshing.ts`):
+- `positions` are local to what was meshed — x and z run 0..16; y runs
+  0..**16 for a section** and 0..**256 for a whole chunk**. A section mesh
+  is placed at `section * SECTION_HEIGHT` by the renderer.
+- `normals` are unit axis vectors, one per vertex. The winding always
+  agrees with the normal (front-facing), verified by the self-check.
+- `uvs` run 0..width and 0..height in **block units** — a merged 4×3 quad
+  gets a 4×3 texture. **The renderer must wrap textures.**
+- `blocks` hold the **ordinal** of the face's `BlockId` (the same ordinal
+  the chunk storage uses), one entry per triangle, parallel to `indices`.
+- A missing neighbour chunk is treated as air, so a chunk at the edge of a
+  generated region still meshes.
+
+**World** (`src/core/world.ts`): `World.getChunk(key)` generates on demand
+and caches; `World.hash()` mixes the **seed** in first, so two worlds with
+different seeds can never hash the same, even when empty.
+
+**Physics** (`src/core/physics.ts`): a blocked axis **snaps** to the surface
+it hit — a body resting on a block has its feet exactly on the block's top
+face (y = 1 for a block at y = 0), and a body sliding into a wall stops
+flush against it.
+
+**Chunk store** (`src/engine/chunkStore.ts`): `getBlockAt` / `setBlockAt` /
+`isSolid` are world-space; `meshChunk(key)` and `meshSection(key, section)`
+take the neighbours from the store automatically.
+
+**Flat file layout, deliberately.** `src/core/*.ts` is flat (rng, noise,
+world, meshing, physics, raycast) rather than a directory of sub-barrels,
+because the TEST AUTHOR's purity suite scans the **top-level** files of
+`src/core` — a nested module would silently escape it.
+
+## 1b. Repository topology (read this before touching anything)
+
+The **canonical repo is on the Linux host**: `~/workspace/blockforge`, branch
+`main`. It is the git "origin" for everyone.
+
+**Linux cannot reach Windows** — Windows has no `sshd` installed — so the
+Windows box can clone *from* Linux but never the reverse. Any agent working on
+Windows must clone **from** Linux:
+
+```sh
+git clone hermes:~/workspace/blockforge
+```
+
+A clone already exists at `C:\Users\JOEL\workspace\blockforge` with
+`origin = hermes:~/workspace/blockforge` (fetch and push both work).
+
+### Per-agent git worktrees (Linux host)
+
+All created from `main` @ `9080292`:
+
+| Agent | Worktree | Branch |
+|---|---|---|
+| ENGINE | `~/workspace/worktrees/bf-engine` | `feature/engine/m1` |
+| TEST AUTHOR | `~/workspace/worktrees/bf-test-author` | `feature/test-author/m1` |
+| RENDER/UI | `~/workspace/worktrees/bf-render` | `feature/render/m1` |
+| RELEASE | `~/workspace/worktrees/bf-release` | `feature/release/m1` |
+| RED-TEAM | `~/workspace/worktrees/bf-redteam` | `feature/redteam/m1` |
+
+### M1 board breakdown
+
+| Task | Role | Owner |
+|---|---|---|
+| T26 | ENGINE — core RNG, terrain, greedy mesher, physics, raycast | hermes-linux |
+| T27 | TEST AUTHOR — determinism, purity and property suite (`tests/`) | antigravity |
+| T28 | RENDER/UI — camera, break/place wiring, procedural textures | hermes-win |
+| T29 | RELEASE — CI workflow and README with the disclaimer | hermes-win |
+| T30 | RED-TEAM — attack the core | opencode |
+
+Board commands (Linux host):
+
+```sh
+python3 ~/workspace/agent-queue/board.py status
+python3 ~/workspace/agent-queue/board.py claim-next --owner <you>
+python3 ~/workspace/agent-queue/board.py update <T-id> --owner <you> --status done --notes "..."
+```
+
+> **Quoting warning:** board notes go through `bash` when passed as shell
+> arguments. Backticks and `$` inside a note are interpreted as command
+> substitution and will corrupt the note. Write board operations as a small
+> Python script that calls `board.py` with an **argv array** instead of
+> building a shell string.
+
+## 1c. G1 status correction (read before reporting any gate)
+
+**G1 is NOT passed.** The M1 kickoff cycle reported the coverage floor as
+satisfied for the test-suite slice. The measurement was real but was taken
+against a 49-statement denominator — `types.ts`, `constants.ts`, `index.ts` —
+which contained **no executable code**. Re-measured on the real combination
+(the test suite at `52528ad` plus the ENGINE agent's `src/core/rng.ts` and
+`src/core/world/*.ts`), independently by hermes-linux:
+
+| | |
+|---|---|
+| `npm test` | 58 / 58 pass |
+| `npm run coverage` | **exit 1** |
+| statements | 26.62 % (78/293) |
+| branches | 20.56 % (22/107) |
+| functions | 35 % (14/40) |
+| lines | 27.59 % (77/279) |
+
+**The gate is correctly armed.** It now fails because there is real code to
+cover, and the 85 % floor is enforced in `vitest.config.ts` exactly as
+intended. G1 closes when the ENGINE code has real tests against it — not
+before, and not by lowering the floor.
+
+What *is* proven: the threshold fails the build below 85 %, the test author's
+46-test suite passes against the contract, and the contract itself now carries
+41 purpose-built assertions (see the architect hardening branch below).
+
+## 1d. The build fleet (expanded during kickoff)
+
+The fleet is larger than the four herdr panes. On the Linux host there are
+**seven headless Hermes build agents, one per role**, working in the
+per-agent worktrees above:
+
+| Role | Board owner | Worktree |
+|---|---|---|
+| ENGINE | `engine` | `~/workspace/worktrees/bf-engine` |
+| GAMEPLAY | `gameplay` | `~/workspace/worktrees/bf-gameplay` |
+| RENDER/UI | `renderui` | `~/workspace/worktrees/bf-render` |
+| NETCODE | `netcode` | `~/workspace/worktrees/bf-netcode` |
+| TEST AUTHOR | `testauthor` | `~/workspace/worktrees/bf-test-author` |
+| RED-TEAM | `redteam` | `~/workspace/worktrees/bf-redteam` |
+| RELEASE | `release` | `~/workspace/worktrees/bf-release` |
+
+`board.py` `VALID_OWNERS` was **extended** to include these seven role owners
+alongside the four coordination agents (`hermes-win`, `hermes-linux`,
+`antigravity`, `opencode`) and `operator`. It was extended, **not weakened** —
+an unknown owner is still rejected with exit 1.
+
+### Two overlapping breakdowns, being reconciled
+
+| Board task | Owner | Note |
+|---|---|---|
+| T26 ENGINE | `engine` | role agent now owns the implementation |
+| T27 TEST AUTHOR | `antigravity` | 46-test contract suite landed @ `52528ad` |
+| T28 RENDER/UI | `hermes-win` | slice 1 landed @ `956858d` |
+| T29 RELEASE | `hermes-win` | CI + README landed @ `480a2f8` |
+| T30 RED-TEAM | `redteam` / `opencode` | 11 findings filed (T40–T50) |
+| T32 gameplay | `gameplay` | M3 work |
+| T34/T39 netcode | `netcode` | M4 work |
+
+T33 (renderui) and T37 (release) were dropped in favour of T28 and T29.
+
+**Open gate-order flag:** M3/M4 work is running while M1 is not complete. The
+brief says never start M(n+1) until every gate of M(n) passes. Raised for the
+architect's decision — finish M1 first, or run ahead and hold the ordering at
+merge time.
+
+## 1e. GitHub access (discovered, verified — do not rediscover)
+
+**Account:** `HoTWinGs06` (user type, not site_admin). Fine-grained token,
+prefix `github_pat_`.
+
+### The token lives in ONE place
+
+```sh
+# Linux host only
+~/.hermes/.env        ->  GITHUB_TOKEN=<the fine-grained PAT>
+```
+
+It is **not** in `~/.config/gh/hosts.yml`, and the `gh` CLI does not read
+`~/.hermes/.env` — you must export it yourself:
+
+```sh
+export GH_TOKEN=$(grep -m1 -oE '^GITHUB_TOKEN=.*' ~/.hermes/.env | cut -d= -f2- | tr -d '"')
+gh auth status        # -> Logged in to github.com account HoTWinGs06 (GH_TOKEN)
+```
+
+### What works, and what does not — measured, not assumed
+
+| Host | `gh` CLI | Git transport to GitHub | Notes |
+|---|---|---|---|
+| Linux build host | **yes**, 2.102.0 at `~/.local/bin/gh` | **HTTPS + token — verified** (`git ls-remote` exit 0) | SSH to GitHub is **not** authorised: the key is offered but never accepted |
+| Windows (the PC) | **not installed** | **HTTPS + Git Credential Manager — verified** (stored credential, user `HoTWinGs06`) | `gh` absent; GCM 2.7.0 present; no GitHub SSH key either (`git@github.com` → permission denied) |
+
+**Use HTTPS remotes everywhere.** SSH to GitHub fails from both hosts.
+
+Linux push without ever writing the token to disk or into a URL:
+
+```sh
+git config --global credential.helper   '!f() { echo username=x-access-token; echo password=$(grep -m1 -oE "^GITHUB_TOKEN=.*" ~/.hermes/.env | cut -d= -f2- | tr -d """); }; f'
+git remote add origin https://github.com/HoTWinGs06/blockforge.git
+```
+
+The Windows side needs nothing extra — GCM already holds the credential.
+
+### gitleaks — now installed on both hosts
+
+Required by the brief before any push, and a gate in the CI workflow.
+
+| Host | Path | Version |
+|---|---|---|
+| Linux | `~/.local/bin/gitleaks` | 8.30.1 |
+| Windows | `C:\Users\JOEL\AppData\Local\Programs\gitleaks\gitleaks.exe` | 8.30.1 |
+
+**The canonical repo currently scans CLEAN** — `gitleaks dir .` over
+`~/workspace/blockforge` reports **0 findings** across ~170 KB. Re-run it
+before every push.
+
+### THE REPO STILL MUST NOT BE CREATED YET
+
+`gh repo view HoTWinGs06/blockforge` → *could not resolve to a Repository*.
+That is correct. The brief says the public repo is created **only after M1
+and M2 gates pass**, and M1 is not complete (the engine has not landed on
+main and G1 is not passed).
+
+When the gate opens, RELEASE creates it with:
+
+```sh
+gh repo create blockforge --public --source=. --remote=origin
+```
+
+One caveat recorded now rather than discovered later: `gh repo create` has
+**no `--dry-run`**, and the token is fine-grained so its scopes are not
+listed by the API. Create-permission therefore cannot be verified without
+creating. If it fails, the fallbacks are a classic PAT with `public_repo`
+scope, or creating the repo once in the browser and letting `gh` attach to
+it — both need no code changes.
+
+The canonical Linux repo currently has **no git remote** (`git remote -v` is
+empty), which is expected until the repo exists.
+
+## 1f. The M1 prototype — the first playable build
+
+**Branch:** `feature/architect/m1-integration` @ `05576ec` on the canonical repo.
+It merges `feature/engine/m1` + `feature/hermes-win/g2` + the architect's
+T40–T43 contract hardening. The render branch **on its own did not build** —
+`engineBridge.ts` could not resolve `../engine/index.js`, because the engine
+had never been merged in. This merge is what makes the app real.
+
+**Gates, all read back, not assumed:**
+
+| | |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run build` | exit 0 |
+| `npx playwright test` (G2) | **4 passed (4)** — including *loads the game with no console errors or warnings* and *keeps the console clean across the whole run* |
+
+**What works, verified by driving it:** the world generates; the camera is
+first person; `WASD` moves; `F` breaks and `R` places a block; the raycast
+reports the targeted block with world coordinates (`Rubble -2, 68, -9`, then
+`Clay -2, 68, -9` once the break changed the target); the pause menu renders;
+the originality disclaimer is in the HUD.
+
+**Run it:**
+
+```sh
+git clone hermes:~/workspace/blockforge      # or use an existing clone
+git checkout feature/architect/m1-integration
+npm ci
+npm run dev            # http://localhost:5173
+```
+
+Controls are in the README. Screenshots of the prototype are in
+`C:/Users/JOEL/workspace/blockforge-play/prototype-1..5.png` on the Windows box.
+
+**Known visual issue (T53, owner RENDER/UI): the world is far too dark.** The
+terrain is legible and per-face shading works — faces at different angles get
+different tones, so the directional light is live — but block faces read as
+almost black. Either the procedural texture atlas is far too dark, the
+ambient/hemisphere light is too weak against the directional, or the material
+is not lit as intended. This is the gap between "technically runs" and
+"pleasant to play", and it should be fixed before the renderer is built on
+further.
+
+**Not in M1 yet:** inventory and hotbar contents (slots are empty), crafting,
+mobs, hunger, biomes, caves, trees, water, day/night, save/load,
+multiplayer, and the settings menu beyond the pause overlay.
+
+## 1g. Speed and cleanliness pass (measured, not asserted)
+
+### The biggest drag was structural, not tool speed
+
+`main` was **45 files and 5,860 lines behind** — every agent was branching
+from the bare scaffold, and branches were stacking on each other instead of on
+a shared `main`. That is what produced the stale golden hash: the render
+branch's `engine-wiring` test pinned a world hash recorded against a
+mid-flight engine, and the engine kept moving. The render branch also did not
+build on its own (`engineBridge.ts` could not resolve `../engine/index.js`).
+
+`main` is now the integrated state (`feature/architect/m1-integration`,
+`672dee1`) — **50 files, 6,014 insertions** versus the scaffold. Branch from
+`main` now, not from a stacked branch.
+
+### One-command gate
+
+```sh
+npm run verify     # typecheck -> lint -> test -> coverage -> build, with a timing table
+npm run check      # the fast inner loop: typecheck, lint, test
+```
+
+`scripts/verify.mjs` runs the chain in order, stops at the first failure,
+names the failing step, and prints per-step milliseconds. One command and one
+summary beats five commands and five exit codes to eyeball.
+
+### Measured wins
+
+| Change | Before | After | Note |
+|---|---|---|---|
+| vitest `isolate: false` | 7,855 ms | **6,151 ms** | same 105-test suite, −1.7 s (−22 %) |
+| new worktree setup | `npm ci`, 6–30 s, ~150 MB | **symlinked `node_modules`** | `scripts/new-worktree.sh` |
+
+`isolate: false` reuses one worker instead of spawning one per file. `src/core`
+is pure, so files cannot leak state into each other — and sharing the module
+registry would *expose* a leak if one existed.
+
+`scripts/new-worktree.sh <agent> [suffix]` creates a worktree and links the
+canonical repo's `node_modules` into it. Seven worktrees were duplicating
+~1 GB of dependencies. **Do not run `npm ci` in a linked worktree** — it would
+delete the shared tree. Run `npm install <pkg>` if you need a new dependency;
+that replaces the link with a real tree, which is correct but slower.
+
+### Cleanliness
+
+- `src/dev/entry.ts` → **`src/entry.ts`**. It is the production entry point
+  and it ships to users; the dev world stand-in it replaced is gone, so the
+  `dev/` name was a lie about what the file is.
+- `eslint.config.js` gained a **Node-globals override for `scripts/`** — the
+  Node helper scripts were being linted against browser globals and
+  `console`/`process` came back undefined.
+- The **vacuous-hash canary was inverted**. `tests/engine-wiring.test.ts`
+  deliberately pinned the OLD bug (`a.hash() === c.hash()` for two *different*
+  seeds) so that finding E5 stayed visible. The engine has since **fixed E5**
+  — `hash()` now mixes the seed and the chunk contents — so the canary fired
+  and had to be inverted to assert the fixed behaviour. The new form is
+  *stronger*: same seed → same hash, **different seed → different hash**,
+  which the old form could never have detected.
+
+### Gate state on `main` right now
+
+| Step | Result |
+|---|---|
+| typecheck | 0 |
+| lint | 0 |
+| test | **105 / 105 green** across 9 files |
+| build | 0 |
+| G2 Playwright | **4 / 4**, including the zero-console-warnings assertion |
+| **coverage (G1)** | **RED — 64.86 % statements vs the 85 % floor** |
+
+The coverage gap is real and precisely located: `physics.ts` 5.68 % and
+`raycast.ts` **0 %** are the two holes; branches sit at 49 % even where
+statements are high. `rng.ts` 82.85 %, `meshing.ts` 90.72 % and `noise.ts`
+100 % are close. G1 closes when the engine's code has real tests against it —
+**the floor must not be lowered to make it green.** Filed as T55.
 
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
@@ -81,6 +451,101 @@ Run on the Linux host after `npm install` (156 packages, 0 vulnerabilities):
 `npm install` was run with `--no-audit --no-fund`; `npm audit` was then run
 separately and is clean.
 
+### Playwright (gate G2) — runs on the Windows host
+
+**The Linux host cannot run Playwright.** It has no Chromium and none of its
+runtime libraries (`libnss3`, `libatk`, `libgbm`, `libasound`, `libxkbcommon`,
+`libpango`, `libcairo`), and **no sudo**, so `npx playwright install --with-deps`
+cannot work there. It does have a working docker daemon and the user is in the
+`docker` group, so the official Playwright container is a viable alternative.
+
+**The Windows host works, and is verified.** Playwright 1.64.1 with
+`chromium-1248` and `chromium_headless_shell-1248` installed under
+`%LOCALAPPDATA%\ms-playwright`. Verified by launching it: Chromium
+**156.0.8078.4** starts headless, a page loads, and the console stream is
+observable (0 messages on a clean page) — which is exactly what gate G2 asserts
+on.
+
+```sh
+cd C:\Users\JOEL\workspace\blockforge
+npm ci
+npx playwright install chromium
+```
+
+**Watch out:** running `npx playwright install chromium` *outside* the repo
+installs whatever build the global `playwright` wants (build 1208), not the one
+the pinned `@playwright/test@1.64.1` expects (build 1248) — the launch then
+fails with "Executable doesn't exist". Always run it from inside the repo.
+
+RELEASE (T29) owns the final decision on where CI runs the smoke test.
+
+## 3b. ENGINE gate results (M1 cycle 1 — read this, do not re-measure blind)
+
+Measured on the Linux host from the committed tree at `0276bad`.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| **G3** — chunk generation + meshing | **PASS** | avg **3.958 ms/chunk**, p95 **4.175 ms** (budget: avg < 16 ms). Generation avg 1.176 ms, meshing avg 2.782 ms. `node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js` |
+| **G6** — cross-process determinism | **PASS** | 5 seeds × 2 **fresh processes**, all identical: seed 0 `d6e4cc59`, seed 1 `bd3879a7`, seed 12345 `57b308bb`, seed 2147483647 `66e09129`, seed -1 `4df02b13`. `node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js` |
+| **G5** — typecheck / lint | **PASS** | `npm run typecheck` exit 0, `npm run lint` exit 0 (0 errors, 0 warnings), both re-read after the last commit. |
+| **G1** — coverage floor | **NOT CLOSED** | `npm run coverage` exit 1 at 40.17% lines / 39.55% statements / 35.63% functions / 26.27% branches, against the 85% floor. The TEST AUTHOR's suite (52528ad) covers the frozen contract and the dormant specs; it does not exercise the engine's new code. **This is the gate working, not a regression — do not lower the floor.** |
+| **Purity** — `src/core` static scan | **PASS** | 0 violations across all 9 top-level core files, using the TEST AUTHOR's own patterns and comment-stripping: no `Math.random`, `Date.now`, `performance.now`, no DOM/`localStorage`/`indexedDB`, no network calls, no Three.js, no cross-layer imports. |
+
+**G6 both hashes, as required by the brief** (each seed run twice, in two
+separate processes, compared):
+
+```
+seed 0           d6e4cc59 == d6e4cc59 MATCH
+seed 1           bd3879a7 == bd3879a7 MATCH
+seed 12345       57b308bb == 57b308bb MATCH
+seed 2147483647  66e09129 == 66e09129 MATCH
+seed -1          4df02b13 == 4df02b13 MATCH
+G6 PASS: 5 seeds, identical hashes across fresh processes
+```
+
+### How to run the gate scripts
+
+The scripts are TypeScript, so they are typechecked and linted like the rest
+of the code. Build them once, then run:
+
+```sh
+export PATH="$HOME/.local/opt/node/bin:$HOME/.local/bin:$PATH"
+cd ~/workspace/worktrees/bf-engine
+npx tsc -p scripts/tsconfig.build.json
+B=node_modules/.cache/blockforge-scripts
+node $B/scripts/bench/chunkBench.js        # G3
+node $B/scripts/determinism/check.js       # G6
+node $B/scripts/selfcheck/meshCheck.js    # mesher invariants
+node $B/scripts/selfcheck/engineCheck.js  # physics + raycast invariants
+```
+
+`scripts/tsconfig.build.json` emits to `node_modules/.cache/blockforge-scripts`,
+which is already gitignored — nothing in the repo is polluted by a build.
+
+### ENGINE commits (branch `feature/engine/m1`)
+
+| SHA | What |
+|---|---|
+| `1056b3a` | `feat(core)`: seeded PRNG, value noise, chunked world generation |
+| `c035e87` | `feat(core)`: greedy mesher with a stable, comparable vertex order |
+| `52e6891` | `feat(core)`: AABB physics with gravity, and DDA raycasting |
+| `d2bb059` | `feat(engine)`: chunk store and worker orchestration |
+| `0276bad` | `feat(core)`: barrel exports + the gate scripts |
+
+The TEST AUTHOR's suite (`52528ad`) is merged into this branch, so the
+engine is verified against a real suite rather than an empty core.
+
+### A defect found and fixed from the render side
+
+The RENDER agent found that `hash()` was **vacuous on an empty store** — it
+walked only the loaded chunks, so every seed produced the same constant
+`811c9dc5` (the FNV-1a offset basis). It also never mixed the **seed** in
+at all, so two worlds could in principle collide. Fixed in both
+`World.hash()` and `ChunkStore.hash()`: the seed is mixed in first, as four
+little-endian bytes. `scripts/selfcheck/engineCheck.ts` now pins this — an
+empty world still hashes differently per seed, the same seed and chunks hash
+the same, and loading a chunk changes the hash.
+
 ## 4. Milo butler discovery (do not rediscover)
 
 The brief required discovering the Milo interface exactly rather than
@@ -131,27 +596,38 @@ None open. See `docs/BLOCKERS.md`.
 
 ## 7. Next actions
 
-1. **TEST AUTHOR** — write the determinism/purity suite first: `src/core` must
-   contain no `Math.random`/`Date.now`/`performance.now`, no DOM access, no
-   `localStorage`/`IndexedDB`, no network calls, no Three.js import; and must
-   not import from `src/engine`, `src/render`, `src/net`, `src/gameplay` or
-   `server/`. This is the load-bearing property of the whole project.
-2. **ENGINE** — implement `SeededRng` in `src/core/rng.ts` (own
-   implementation, no library), then terrain generation, greedy meshing,
-   physics and raycasting against the frozen contract. Nothing in the
-   contract may be renamed.
-3. **RENDER/UI** — first-person camera and block break/place wiring; textures
-   generated procedurally with canvas 2D (no committed art assets).
-4. **RELEASE** — set up `.github/workflows/ci.yml` (the repo has no CI yet, so
-   G5's "CI green" is not yet satisfiable) and the README with the required
-   disclaimer:
+Full detail for every task is on the board. Summary:
+
+1. **T27 TEST AUTHOR (antigravity)** — **G1's remaining work, and the
+   critical path now.** The engine's code exists, so the coverage denominator
+   is real: 40.17% lines against the 85% floor. The files needing tests, in
+   priority order: `src/core/raycast.ts` (0%), `src/core/noise.ts` (1.8%),
+   `src/core/world.ts` (17.9%), `src/core/physics.ts` (5.7%),
+   `src/core/meshing.ts` (86.1%, gaps at 184/189-190/427-442),
+   `src/core/rng.ts` (82.9%, gaps at 82/87/92/120-122). The behaviour
+   contracts to pin are in **§1a** above. The suite's dormant rng and mesher
+   specs now **arm against the real code** and pass. **Do not lower the
+   floor** — the gate is correctly armed.
+2. **T26 ENGINE (hermes-linux)** — **DONE for M1.** The whole engine is
+   landed and committed on `feature/engine/m1` (see §3b for the SHAs and the
+   measured gates). Nothing in the frozen contract was renamed. The engine's
+   API for the renderer is in §1a.
+3. **T28 RENDER/UI (hermes-win)** — first-person camera and block
+   break/place wiring; textures generated procedurally with canvas 2D (no
+   committed art assets). **MERGE ORDER: ENGINE FIRST** — the render branch
+   imports `ChunkStore` from `../engine/index.js` and does not build without
+   `src/engine/` and `src/core/world.ts` present.
+4. **T29 RELEASE (hermes-win)** — set up `.github/workflows/ci.yml` (the repo
+   has no CI yet, so G5's "CI green" is not yet satisfiable) and the README
+   with the required disclaimer:
 
    > BlockForge is an original, unofficial Minecraft-inspired voxel sandbox.
    > Not affiliated with, endorsed by, or sponsored by Mojang or Microsoft.
    > Minecraft is a trademark of Mojang AB / Microsoft.
 
-5. **RED-TEAM** — attack the core once ENGINE has landed: pathological
-   seeds, property-test violations, non-determinism.
+5. **T30 RED-TEAM (opencode)** — attack the core once ENGINE has landed:
+   pathological seeds, property-test violations, non-determinism. A red-team
+   test that fails is a success, not a bug in their work.
 6. **NETCODE** — no M1 work; the wire protocol is frozen at
    `PROTOCOL_VERSION = 1` but multiplayer is an M4 gate.
 
@@ -168,177 +644,153 @@ None open. See `docs/BLOCKERS.md`.
   Write the message to a file and send with a Node `spawn` using an argv
   array, or use `$(cat file)`.
 
+
+## 9. Test Author Handoff (M1 Slice 1)
+
+- **Agent:** TEST AUTHOR (`antigravity`, pane `w1:p4`)
+- **Task:** T27 — M1/TEST-AUTHOR
+- **Files Created:**
+  - `tests/purity.test.ts`: Static analysis enforcing zero `Math.random`, `Date.now`, `performance.now`, DOM/browser globals, network requests, Three.js imports, or cross-layer imports inside `src/core/`.
+  - `tests/constants.test.ts`: Property-based (`fast-check`) verification of bijection over `(16, 256, 16)`, y-major indexing, `RangeError` bounds enforcement, and `chunkKeyToString` / `chunkKeyFromString` round-tripping.
+  - `tests/types.test.ts`: Frozen `BlockId` validity, `ALL_BLOCK_IDS` completeness, `SOLID_BLOCKS` / `TRANSPARENT_BLOCKS` sets, and strict originality checks ensuring no prohibited Mojang block identifiers.
+  - `tests/determinism.test.ts`: Cross-process byte-identical chunk hash equivalence across independent Node processes with matching seeds, and order-invariant block array population.
+  - `tests/contract.test.ts`: Surface validation of `src/core/index.ts` re-exports against `docs/API.md`.
+  - `tests/rng.test.ts`: Behavioral and property specification for `SeededRng` (`src/core/rng.ts`).
+  - `tests/meshing_spec.test.ts`: Behavioral and property specification for Greedy Meshing (`MeshOutput` structure, zero air faces, section boundary bounds, deterministic output).
+- **Verification:**
+  - `npm test`: 7/7 test suites passing (46/46 tests green).
+  - `npm run coverage`: 100% statements, 100% branches, 100% functions, 100% lines on `src/core/` (satisfies G1 >= 85% requirement).
+  - `npm run lint`: 0 errors / 0 warnings.
+  - `npm run typecheck`: clean (`tsc --noEmit` exit 0).
+- **Handoff Target:** `ENGINE` (`hermes-linux` on T26) — build `src/core/rng.ts` and the chunk generator / greedy mesher against these test specs.
+
 ---
 
-## 9. M1 RED-TEAM — cycle 1 handoff (RED-TEAM)
+## 10. G1 CLOSE-OUT — TEST AUTHOR (M1)
 
-**Branch:** `feature/redteam/m1` · **Commit:** `807f3a83f6857e2cd2a03feae948d73bd2a937d5`
-**Base:** main @ `9080292` · **Owns:** `tests/redteam/` only
-**Board:** T30 (this task) · findings filed as **T40, T41, T42, T43** (owner: opencode)
+**Agent:** TEST AUTHOR (`testauthor`, pane `w1:p4`) · **Task:** T27
+**Branch:** `feature/test-author/m1` · **Final commit:** `c419f8c`
+**Commits:** `df1b5ec` (tests) · `7fc1dd2` (docs) · `16bc2c2` (flaky-test
+fix) · `94d9ef8` (merge of the engine's fix branch) · `c419f8c` (closed
+findings converted + hardened contract covered)
+**Base:** `feature/engine/m1` @ `e29fc98`, then `feature/engine/fix-e1-e2-tunnel`
+@ `74337bb` (merged in when the engine closed the findings below).
+This repo has no `origin` remote — branches are shared through the local
+worktrees.
 
-### 9.1 What landed
+### 10.1 The gate, read back from the tool
 
-| Item | Where | Notes |
-|---|---|---|
-| Static purity scanner for `src/core/` | `tests/redteam/lib/purity-scan.ts` | The static checks that `docs/ARCHITECTURE.md` §1 assigns to RED-TEAM. Lexes each file, blanks comments and string contents, then matches the banned constructs against the remaining **code** — so the frozen contract's own doc comment ("no Math.random, Date.now, performance.now") is not flagged. Catches `Math.random`, `Date.now`, `new Date`, `performance.now`, `crypto.getRandomValues`, DOM/storage globals, network APIs, `node:` builtins, `three`/`react`, and imports from `src/engine`, `src/render`, `src/net`, `src/gameplay`, `server/`. |
-| Purity scanner meta-tests | `tests/redteam/purity.test.ts` | 15 positive controls (the scanner must CATCH each banned construct), 5 negative controls (it must NOT cry wolf), plus a scan of the real `src/core/`. |
-| Cross-process determinism harness | `tests/redteam/lib/determinism-harness.ts` | Gate G6 needs **fresh processes**; a Vitest process is not one. Transpiles TS to a temp dir with the project's own pinned `typescript` 5.9.3 (Node 24 cannot resolve the core's `"./types.js"` specifiers to the `.ts` file behind them) and spawns real child processes. |
-| Harness self-test | `tests/redteam/determinism-harness.test.ts` | Proves the harness **DETECTS** a non-deterministic generator (one that leaks `Date.now`) and reports identical hashes for a deterministic one. A determinism harness that cannot fail is decoration. |
-| Contract guard attack | `tests/redteam/contract-guards.test.ts` | The architect's explicit ask: confirm no path bypasses `blockIndex`/`chunkKeyFromString`. |
-| Findings F1–F4 | `tests/redteam/f1-…` … `f4-…` | Each with a `control:` test pinning current behaviour, so a green `it.fails` can never hide a dead assertion. |
-| Finding index | `tests/redteam/findings.ts` | The list of open findings, their owners, board tasks and repros. |
+```
+npm run coverage -> exit 0
 
-### 9.2 Findings (the deliverable)
+Statements   : 99.56% ( 682/685 )
+Branches     : 95.32% ( 265/278 )
+Functions    : 100%   ( 96/96  )
+Lines        : 99.52% ( 632/635 )
+```
 
-A red-team test that **fails** is the deliverable. Each finding is encoded with Vitest's
-`it.fails`: while the bug exists the inner assertion fails and the **shared suite stays
-green for every other agent**; the moment the owner fixes it, `it.fails` goes **red**
-("expected to fail but passed") and announces the finding as closed. RED-TEAM then
-converts it to a plain `it` in the closing commit. No finding is ever silently forgotten.
+**The 85% floor was not moved.** `vitest.config.ts` is untouched; the
+thresholds are still `lines: 85, functions: 85, branches: 85, statements: 85`.
+The gate went green because the tests caught up with the code, which is the
+only way it is allowed to go green.
 
-| # | Task | Owner | Severity | Finding |
+Suite: **14 files, 206 tests — 206 passed, 0 failures, 0 expected-fail
+remaining.** `npm test` exit 0 · `npm run lint` exit 0 (0 errors) ·
+`npm run typecheck` exit 0. Verified stable across three consecutive
+`npm run coverage` runs with identical numbers.
+
+| file | stmts before | stmts after | branch before | branch after |
 |---|---|---|---|---|
-| F1 | T40 | opencode | high | `SOLID_BLOCKS`/`TRANSPARENT_BLOCKS` are `Object.freeze`d **Sets**. `Object.freeze` does not freeze a Set's contents (`[[SetData]]` is not a property), so both are **mutable global state** in the layer that must be pure. `SOLID_BLOCKS.add("air")` succeeds and air becomes solid; `Object.isFrozen` still reports `true`. |
-| F2 | T41 | opencode | high | `chunkKeyFromString` accepts malformed keys — the guard is `Number.isInteger(Number(part))` and `Number()` parses `""`→0, `" "`→0, `"0x10"`→16, `"1e3"`→1000, `"+5"`→5, `"0b101"`→5, `"1.0"`→1. `"1,"` and `"1,0"` address the **same chunk**, so it is not the inverse of `chunkKeyToString`. |
-| F3 | T42 | opencode | medium | `Chunk.blocks` is a `Uint8Array` "indexed by BlockId ordinal", but no byte→BlockId mapping is exported and **233 of 256** byte values are invalid. Consumers must each invent a mapping; if two disagree by one position, every block in every saved world silently becomes a different block. |
-| F4 | T43 | opencode | medium | `chunkKeyToString` emits strings its own inverse rejects: `{cx:1.5,cz:2}`→`"1.5,2"` and `chunkKeyFromString("1.5,2")` **throws** (same for `NaN`, `Infinity`). A key the engine can produce but the save file cannot read back is a silent data-loss path. |
+| `src/core/raycast.ts` | 0.00% | 98.11% | 0.00% | 100% |
+| `src/core/noise.ts` | 1.81% | 100% | 100% | 100% |
+| `src/core/physics.ts` | 5.68% | 100% | 0.00% | 92.86% |
+| `src/core/world.ts` | 17.47% | 99.02% | 7.77% | 96.66% |
+| `src/core/rng.ts` | 82.85% | 100% | 62.50% | 100% |
+| `src/core/meshing.ts` | 86.09% | 100% | 61.29% | 85.48% |
+| `src/core/constants.ts` | 100% | 100% | 100% | 95.65% |
+| `src/core/index.ts` | 100% | 100% | 100% | 100% |
+| `src/core/types.ts` | 100% | 100% | 100% | 100% |
+| **TOTAL** | **39.24%** | **99.56%** | **26.27%** | **95.32%** |
 
-**Hypotheses of cause** (may be wrong — said so): F1 and F2 both come from guarding with a
-*type* (`ReadonlySet`) and a *convenient coercion* (`Number()`) instead of a runtime check.
-F3 and F4 come from the storage format being specified in a comment rather than in an
-exported, validated function.
+### 10.2 Files
 
-**Verified negative result — `blockIndex` is CLEAN.** Every attack was tried (negatives,
-out-of-range on each axis, fractional, `NaN`, `Infinity`, precision-losing `2**53`/`1e21`,
-non-number types, `-0`): **0 bypasses**. It is also a proven **bijection** onto
-`0..65535` over the full 16×256×16 space (0 collisions, 0 gaps), and it matches the frozen
-y-major formula `x + 16*(z + 16*y)`. The storage-order contract is trustworthy.
-
-### 9.3 Gates — read back, not assumed
-
-| Command | Result |
+| file | what it pins |
 |---|---|
-| `npm run typecheck` | **exit 0** — `tsc --noEmit` clean (my test files are in the tsconfig scope) |
-| `npm run lint` | **exit 0** — ESLint 10, 0 errors 0 warnings |
-| `npm run test` | **exit 0** — 7 files, **75 passed / 25 expected fail** (100 total) |
-| `npm run coverage` | **exit 0** — **100%** statements/branches/functions/lines on `src/core` (was 0% — my red-team suite now covers the whole frozen contract, which also unblocks G1's 85% floor) |
+| `tests/raycast.test.ts` (new) | DDA hit cell, face normal points back at the ray on all six axes, placement cell is the empty neighbour, miss returns null, edge tie-break is stable, start-inside terminates, `maxDistance` bounds the search. |
+| `tests/physics.test.ts` (new) | Collision box centred on the feet, `aabbIntersects` touch-vs-overlap, falling body rests exactly on the floor top (`y === 1`), body stopped flush against a wall in all four directions, head-bump clearance, zero `dt` is a no-op, body pushed clear of a wall it started inside, and the no-overlap property over multi-block moves. |
+| `tests/noise.test.ts` (new) | `valueNoise2`/`valueNoise3` determinism, seed sensitivity, `[0, 1)` range, C2 continuity across a lattice boundary, `fbm2` determinism, range and totality. |
+| `tests/world.test.ts` (new) | `generateChunk` byte-identical for the same seed+key, different for a different seed or key, order-independent, heightmap continuous across a chunk border, world hash stable and seed-sensitive, chunk cache/unload, snapshot round-trip, block-ordinal inverses. |
+| `tests/contract_types.test.ts` (new) | The engine's hardened frozen contract: `SOLID_BLOCKS`/`TRANSPARENT_BLOCKS` are genuinely immutable (the mutators throw), the block-byte encoding is a bijection, an invalid byte is rejected rather than decoded, and a chunk key round-trips exactly. |
+| `tests/rng.test.ts` (extended) | Both `nextInt` bounds and the three `RangeError` paths, `nextUint32` covers the full uint32 range, `getState`/`setState` round-trip, `createRngFromState` restores a stream exactly, and `fork` is independent of the parent's consumption history. |
+| `tests/meshing_spec.test.ts` (extended) | Stable byte-identical vertex order, one `blocks` entry per triangle, no face for air, **no face across a section boundary**, west/east/north/south neighbour margins, greedy merge of a 4×1 slab into one quad, winding agrees with the normal. |
+| `tests/lib/purity-scan.ts` (new) | The purity scanner, built on the TypeScript AST. |
+| `tests/purity.test.ts` (rewritten) | The guard plus 23 meta-tests proving it can still fail. |
 
-### 9.4 What this depends on, what it blocks
+### 10.3 The purity guard is no longer blind (T48 / T49 / T50 closed)
 
-- **Depends on:** nothing. All of it runs against the frozen contract at `9080292` and needs
-  no engine code. The engine has not landed any code yet (`feature/engine/m1` is still at
-  `9080292`), so the engine-facing attacks (pathological seeds, RNG order-dependence,
-  meshing edge cases, malformed packets) are **queued, not done**.
-- **Blocks:** F1–F4 block a correct M2 save format and a correct M4 wire protocol, both of
-  which key chunks by `chunkKeyToString` and carry `Chunk.blocks` bytes. F2 and F4 in
-  particular are on the gate-G4 path ("the server must reject 100% of malformed input").
-- **Does NOT block:** G5 or the build. The shared suite is green — my findings are encoded so
-  they do not break anyone else's run.
+The old guard was a regex sweep over comment-stripped text, and RED-TEAM
+found three holes in it. All three are closed, and the guard now has
+**meta-tests that replay every known-bad form against the scanner** — so a
+future weakening goes red before the real files do.
 
-### 9.5 Next (RED-TEAM)
-
-1. **Poll the board** for ENGINE's first commit and attack the moment it lands: the seeded
-   RNG (order-dependence, `fork` independence), pathological seeds (0, 1, 2³¹−1, 2³²−1),
-   meshing edge cases (all-air, all-solid, world-border, negative coordinates) and the
-   cross-process determinism of the real world generator via the harness in
-   `tests/redteam/lib/determinism-harness.ts` — which is already built and proven.
-2. **NETCODE** has no M1 work, so the malformed-packet attacks wait for M4. The board task
-   says so; I will re-check the board each cycle.
-3. Re-run F1–F4 after ARCHITECT fixes them, and log each closed finding in
-   `docs/VICTORIES.md` with the closing SHA.
-
-### 9.6 Notes for the next agent
-
-- The scanner's `it.fails` idiom is the reason the shared suite stays green while four real
-  bugs are open. Do not "fix" a red `it.fails` by weakening the assertion — that is the
-  RED-TEAM's own version of cheating.
-- `tests/redteam/lib/purity-scan.ts` is lexical, not an AST parse. A violation hidden behind
-  computed member access (`Math["ra" + "ndom"]`) is not detected. Recorded as a known limit
-  in the file header.
-- Node 24 cannot `import` the core's TypeScript directly (its `"./types.js"` specifiers do
-  not resolve to the `.ts` file behind them). The harness transpiles with the pinned
-  `typescript` 5.9.3 instead — do not add a new dependency for this.
-
-### 9.7 Cycle 1 continued — the engine's in-flight code attacked
-
-**Commit:** `9a308c9c87d36404d14b3be8d8052a0cc1f0b100` · **Board:** T44, T45, T46, T47 (owner: hermes-linux)
-
-The engine's core existed as **uncommitted work** in `~/workspace/worktrees/bf-engine`
-(`src/core/rng.ts`, `src/core/world/{noise,chunk,blocks}.ts`). A red team that waits for the
-commit arrives late, so RED-TEAM attacked the live code: transpiled it with the pinned
-`typescript` and executed it. `tests/redteam/engine-attack.test.ts` resolves the engine
-directory from `BLOCKFORGE_ENGINE_DIR` and **skips itself when the code is absent**, so it
-keeps running unchanged once the engine commits.
-
-| # | Task | Owner | Severity | Finding | Verified repro |
-|---|---|---|---|---|---|
-| E1 | T44 | hermes-linux | high | `fbm2()` returns **NaN** for `octaves <= 0` (`sum/norm` = `0/0`). A NaN height propagates into every block placement and may not crash at all. | `fbm2(1234, 10.5, 20.5, 0) === NaN`; same for `-3` |
-| E2 | T45 | hermes-linux | high | `fork()` mixes the parent's **current state**, not its seed, so the same label gives a different child stream depending on how much the parent was consumed — order-dependence in the one place the project cannot afford it. | `createRng(42)` → `fork("terrain")` → draw → `fork("terrain")` gives `1766700328,...` vs `3591649458,...` |
-| E3 | T46 | hermes-linux | high | `chunkIndex()` bypasses the frozen `blockIndex()` guard: `chunkIndex(16,0,0) === 16`, which is the storage slot of block **(0,0,1)** — a different block. `chunkIndex(0,256,0) === 65536` is one past the end, so a typed-array write there is **silently dropped**. | direct calls, verified |
-| E4 | T47 | hermes-linux | medium | `valueNoise2` aliases coordinates past int32 (`x \| 0` truncation), and `fbm2` overflows its octave seed: **`fbm2(2^32) === fbm2(0)`** — two different world seeds, one identical world. | `fbm2(4294967296, 10.5, 20.5, 1)` and `fbm2(0, 10.5, 20.5, 1)` both `0.7303423706325702` |
-
-E4 is the dangerous kind of bug for this project: it is **perfectly deterministic**, so it
-passes every hash-based test while still giving two players the same world.
-
-**Verified clean in the engine's code:** the purity scanner reports **no violations** against
-`src/core` in the engine worktree. `getBlock`/`setBlock` bounds-check correctly. `blockOrdinal`
-throws on an unknown id; `blockFromOrdinal` throws `RangeError` for 200, -1 and 1.5.
-`nextInt` never returned an out-of-range value across 290 000 sampled calls (including
-`nextInt(0, 2^32+3)` and `nextInt(0, MAX_SAFE_INTEGER)`). `getState`/`setState` round-trips
-byte-identically.
-
-### 9.8 Finding count
-
-**8 open findings**: F1–F4 against the frozen contract (owner: opencode, T40–T43) and
-E1–E4 against the engine's in-flight code (owner: hermes-linux, T44–T47). All are encoded
-as `it.fails` with a `control:` test pinning current behaviour, so the shared suite stays
-green and each finding announces itself the moment it is fixed.
-
-`npm run test` → **8 files, 77 passed, 32 expected fail** · `npm run typecheck` → exit 0 ·
-`npm run lint` → exit 0 · `npm run coverage` → exit 0, 100% on `src/core`.
-
-### 9.9 Cycle 1 part 3 — the TEST AUTHOR's purity suite attacked
-
-**Commit:** `692eab0d91cdb1a14e5a5ffe7cddd4d15de9da82` · **Board:** T48, T49, T50 (owner: testauthor)
-
-`tests/purity.test.ts` (TEST AUTHOR) is the project's **primary** defence against the purity
-invariant. A guard that cannot fail is not a guard, so it got the same meta-test treatment as
-RED-TEAM's own scanner: their exact code, executed against sources that must be caught.
-
-| # | Task | Owner | Severity | Finding | Verified repro |
-|---|---|---|---|---|---|
-| T1 | T48 | testauthor | **critical** | The file list comes from a **non-recursive** `readdirSync`, so `src/core/world/` is **never scanned** — and that is exactly where the engine is putting rng, terrain, meshing and physics right now. A `Math.random()` there passes the suite completely. | `readdirSync("src/core")` → `constants.ts, index.ts, rng.ts, types.ts`; `src/core/world/` contains `blocks.ts, chunk.ts, noise.ts`, none of them scanned |
-| T2 | T49 | testauthor | **critical** | `stripComments()` deletes from `//` to end of line without knowing the `//` is inside a string. A URL on a line **silently deletes the rest of the line**, including a real `Math.random()`. False negative in the guard that watches the whole project. | `const url = "https://example.com/x"; const r = Math.random();` → after their `stripComments` → `const url = "https:` → **no violations reported** |
-| T3 | T50 | testauthor | medium | `Math . random()` (whitespace around the dot), `require("three")` and `await import("three")` all slip past the current regexes. | each verified MISSED against their exact patterns |
-
-Verified as **correctly caught** by their current patterns (no action needed): `import * as THREE
-from "three"`, `import { Scene } from "three/src/core/Scene.js"`, `from "../engine/thing.js"`,
-`from "../../engine/thing.js"`, `globalThis.Date.now()`, `globalThis.window`, `fetch ('/x')`.
-
-**T1 and T2 are the most serious findings of the cycle.** A purity suite that is blind to the
-directory the engine is actively filling, and that can be silently switched off by a URL in a
-string, would have let real impurity into the one layer the whole project depends on — while
-reporting green. This is exactly the failure mode the brief warns about: nobody can check
-purity by eye.
-
-### 9.10 Cycle 1 — final state
-
-**11 open findings across 3 owners**, all encoded as `it.fails` with a `control:` test pinning
-current behaviour:
-
-| Owner | Findings | Board |
+| id | hole | fix |
 |---|---|---|
-| opencode (ARCHITECT) | F1 frozen-Set mutability · F2 malformed chunk keys · F3 no byte→BlockId mapping · F4 chunkKeyToString emits unreadable keys | T40–T43 |
-| hermes-linux (ENGINE) | E1 `fbm2` NaN · E2 `fork` order-dependence · E3 `chunkIndex` guard bypass · E4 seed/coordinate aliasing | T44–T47 |
-| testauthor (TEST AUTHOR) | T1 purity scan never recurses · T2 `stripComments` eats real code · T3 regex misses | T48–T50 |
+| T1 | `readdirSync(src/core).filter(.ts)` is not recursive, so `src/core/world/`, `meshing/`, `physics/`, `raycast/` and `noise/` were never scanned — nearly all the real code. | The file list is a **recursive walk** (`listTypeScriptFiles`), and the test proves it against a real nested temp tree. |
+| T2 | `stripComments()` deleted from `//` to end of line without knowing the `//` was inside a string, so one URL on a line silently deleted a real `Math.random()` with it. | The scanner is built on the **TypeScript AST**, so comments and strings are structurally distinct. There is no comment-stripping step to get wrong. |
+| T3 | `Math . random()`, `require("three")` and `await import("three")` all slipped past the regexes. | The AST sees a call as a call whatever the spacing, and all four import spellings (`from`, `import`, `require`, dynamic `import`) are handled by one code path. |
 
-**Gates (read back, not assumed):** `npm run typecheck` exit 0 · `npm run lint` exit 0 ·
-`npm run test` → 9 files, **80 passed / 38 expected fail** · `npm run coverage` exit 0, **100%**
-on `src/core`.
+The guard also got **stricter, not looser**: it now flags DOM globals in
+type position, while correctly not flagging `{ document: 1 }`, `foo.document`,
+a local variable that shadows a DOM global name, and a string literal
+containing `"Date.now()"`.
 
-**Branch:** `feature/redteam/m1` @ `692eab0`. The canonical repo (`~/workspace/blockforge`)
-shares this worktree's `.git`, so the branch is already visible from there — there is no
-`origin` remote configured on this host, so nothing was pushed (and nothing needed to be).
+### 10.4 The three "fixed" findings — re-verified, not taken on trust
 
-**Milo:** all three victory posts confirmed with read-back
-(`1562410183651627009`, `1562411850292011011`).
+The engine's first handoff (`e29fc98`) claimed E1, E2 and E5 were all
+fixed. **Measured against that tree, only E5 was.** The engine then landed
+`74337bb`, which fixed the other two — and the `it.fails` written here
+flipped RED to announce each closure, exactly as designed, and each was
+converted to a plain `it` asserting the fixed behaviour.
+
+| id | first handoff claimed | measured | how it ended |
+|---|---|---|---|
+| **E5** (vacuous hash) | fixed | **FIXED** — `hash()` mixes the seed in first, so different seeds differ even with **no chunks loaded**. | Plain `it` in `tests/world.test.ts`. Passes, and stays passing. |
+| **E1** (fbm2 NaN) | fixed | **NOT FIXED** at `e29fc98` — `fbm2` still computed `sum / norm`, and with `octaves <= 0` both are 0, so the result was `NaN`. | `it.fails` → flipped RED → **fixed** in `74337bb` (octave count clamped to ≥ 1) → now a plain `it` in `tests/noise.test.ts`, asserting the fixed behaviour over octave counts −100…100. |
+| **E2** (fork order-dependence) | fixed | **NOT FIXED** at `e29fc98` — `fork()` still derived the child from `this.state`, the parent's *current* state. | `it.fails` → flipped RED → **fixed** in `74337bb` (child derived from `this.seed`) → now a plain `it` in `tests/rng.test.ts`, plus a new test over a range of consumption histories. |
+
+The point of the exercise was never to trust the claim: had the fixes
+landed as claimed, the `it.fails` would have gone red on the spot and
+the suite would have said so.
+
+### 10.5 New finding, found and closed (T64)
+
+`moveWithCollisions` resolved collisions by testing the box at the
+**destination** only; the swept path from start to destination was never
+examined. A body that moved further than one block in a single step
+therefore passed clean through a one-block-thick wall or floor.
+
+Not theoretical: the player falls at up to `TERMINAL_VELOCITY` (60)
+blocks per second, so at any frame rate below 60 fps a falling body
+moves 2+ blocks per step and goes straight through the ground. A body
+stepping 2 blocks into a two-block wall ended up **embedded inside it** —
+worse than tunnelling.
+
+Pinned as `it.fails` with the fixed behaviour inside, then **fixed** in
+`74337bb` (the move is now split into sub-steps of at most half a
+block, so every obstacle is sampled) and converted to a plain `it`,
+together with a new property test that the body never ends up overlapping
+a solid block after a multi-block move.
+
+### 10.6 Handoff
+
+- **ENGINE (`hermes-linux`)** — `74337bb` closed T44 (E1), T45 (E2) and
+  T64 (tunnelling). All three are now pinned as plain `it` asserting the
+  fixed behaviour, so a regression in any of them goes red immediately.
+- **RED-TEAM (`opencode`)** — the `it.fails` in `tests/redteam/` for
+  T48/T49/T50 still test a frozen copy of the OLD purity logic. They
+  should be re-pointed at `tests/lib/purity-scan.ts` (or converted to
+  plain `it` asserting the current behaviour) now that the guard is
+  fixed. The same applies to the red-team's E1/E2 stubs in
+  `tests/redteam/engine-attack.test.ts`.
+- **Coordinator (`hermes-win`)** — G1 passes. G5 (lint + typecheck) is
+  clean. G6 is unaffected; `tests/determinism.test.ts` still passes.

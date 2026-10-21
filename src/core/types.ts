@@ -57,14 +57,45 @@ export enum BlockId {
   Millplank = "millplank",
 }
 
+/**
+ * A genuinely immutable Set.
+ *
+ * `Object.freeze` only makes an object's own PROPERTIES non-writable; a Set's
+ * members live in internal slots that it cannot reach, so `Object.freeze(new
+ * Set(...))` is still mutable. In the pure layer that is mutable global state,
+ * which is exactly what the purity and determinism gates exist to prevent.
+ *
+ * This returns a Set whose mutating methods throw, so the type stays
+ * `ReadonlySet<T>` (consumers keep using `.has()`) but a mutation attempt
+ * fails loudly at the point of the mistake instead of silently corrupting
+ * every later chunk.
+ */
+function immutableSet<T>(values: readonly T[]): ReadonlySet<T> {
+  const target = new Set<T>(values);
+  const mutators = new Set<string>(["add", "delete", "clear"]);
+  return new Proxy(target, {
+    get(source, prop) {
+      const value = Reflect.get(source, prop, source);
+      if (typeof value !== "function") return value;
+      if (mutators.has(String(prop))) {
+        return () => {
+          throw new TypeError(
+            "this block set is immutable - it is part of the frozen core contract",
+          );
+        };
+      }
+      return value.bind(source);
+    },
+  }) as ReadonlySet<T>;
+}
+
 /** Every BlockId value, in declaration order. Deterministic iteration order. */
 export const ALL_BLOCK_IDS: readonly BlockId[] = Object.freeze(
   Object.values(BlockId) as BlockId[],
 );
 
 /** Blocks that are solid to collision. Air, Tidewater and Emberflow are not. */
-export const SOLID_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
-  new Set<BlockId>([
+export const SOLID_BLOCKS: ReadonlySet<BlockId> = immutableSet([
     BlockId.Voidstone,
     BlockId.Slate,
     BlockId.Rubble,
@@ -85,18 +116,58 @@ export const SOLID_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
     BlockId.Smeltforge,
     BlockId.Craftbench,
     BlockId.Millplank,
-  ]),
-);
+  ]);
 
 /** Blocks that let light through (air, water, glass-like panes). */
-export const TRANSPARENT_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
-  new Set<BlockId>([
+export const TRANSPARENT_BLOCKS: ReadonlySet<BlockId> = immutableSet([
     BlockId.Air,
     BlockId.Tidewater,
     BlockId.Emberflow,
     BlockId.Crystpane,
-  ]),
-);
+  ]);
+
+/**
+ * Number of distinct block kinds. A chunk stores one byte per block, so byte
+ * values at or above this are not valid block encodings.
+ */
+export const BLOCK_ID_COUNT = ALL_BLOCK_IDS.length;
+
+/**
+ * The byte that stores `id` in a chunk's block array.
+ *
+ * The encoding is the index of the id in {@link ALL_BLOCK_IDS} (declaration
+ * order). This is the ONLY sanctioned mapping - consumers must not invent
+ * their own.
+ */
+export function blockIdToByte(id: BlockId): number {
+  const ordinal = ALL_BLOCK_IDS.indexOf(id);
+  if (ordinal < 0) {
+    throw new RangeError(`unknown BlockId: ${String(id)}`);
+  }
+  return ordinal;
+}
+
+/**
+ * The BlockId encoded by `byte`.
+ *
+ * Throws for any byte that is not a valid ordinal. Callers decoding
+ * untrusted bytes (a save file, a network packet) should screen with
+ * {@link isValidBlockByte} first so a corrupt value is rejected rather than
+ * thrown out of a decode loop.
+ */
+export function byteToBlockId(byte: number): BlockId {
+  if (!isValidBlockByte(byte)) {
+    throw new RangeError(
+      `invalid block byte: ${String(byte)} (valid range 0..${BLOCK_ID_COUNT - 1})`,
+    );
+  }
+  return ALL_BLOCK_IDS[byte] as BlockId;
+}
+
+/** True when `byte` encodes a real block kind. Cheap pre-check. */
+export function isValidBlockByte(byte: number): boolean {
+  return Number.isInteger(byte) && byte >= 0 && byte < BLOCK_ID_COUNT;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // World geometry
@@ -145,6 +216,14 @@ export interface ChunkSnapshot {
 export interface WorldSnapshot {
   readonly schemaVersion: number;
   readonly seed: number;
+  /**
+   * The season the world was saved in. A world saved in one season must
+   * regenerate in that same season, so this is part of the saved state and
+   * not something re-derived from the wall clock.
+   */
+  readonly season: Season;
+  /** Ticks elapsed since the world was created. Drives the day phase. */
+  readonly tick: number;
   readonly chunks: readonly ChunkSnapshot[];
 }
 
@@ -309,4 +388,165 @@ export interface BlockEditPayload {
   readonly y: number;
   readonly z: number;
   readonly block: BlockId;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Break hardness
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seconds to break a block with a bare hand, per block kind.
+ *
+ * FROZEN alongside the rest of the contract: the table lives in
+ * `constants.ts` as `BREAK_TIME_SECONDS` and every block has its own value, so
+ * no two blocks break at the same rate. Tools scale these numbers; the
+ * contract only fixes the bare-hand baseline.
+ */
+export type BreakSeconds = number;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Items
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Identifier of an item. Block items use the block's name. */
+export type ItemId = string;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Time of day and seasons
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The four phases of a day.
+ *
+ * DETERMINISM: phases are derived from a TICK COUNT, never from the wall
+ * clock. Nothing in `src/core/` may call `Date.now()` or `performance.now()`
+ * to work out the time of day - that would make the world depend on when it
+ * was generated and break the byte-identical guarantee. The same applies to
+ * seasons. A world is a pure function of (seed, state, tick).
+ */
+export type DayPhase = "dawn" | "day" | "dusk" | "night";
+
+/**
+ * The four seasons.
+ *
+ * DETERMINISM: like the day phase, a season is a function of the tick
+ * counter, never of the wall clock. `WorldSnapshot` carries the season so a
+ * world saved in one season regenerates in that same season.
+ *
+ * Seasons start VISUAL - they change the palette, foliage and cover, not the
+ * terrain. A season that changed terrain generation would make the world hash
+ * depend on the season as well as the seed, which is a much larger change to
+ * the determinism contract and to every recorded world hash.
+ */
+export type Season = "thaw" | "green" | "harvest" | "frost";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mobs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mob kinds. Original names, not the well-known ones.
+ *
+ * Passive mobs wander and flee; hostile mobs hunt the player. Which kinds
+ * spawn where, and how often, is GAMEPLAY's decision - the contract only
+ * fixes the identifiers.
+ */
+export type MobKind =
+  | "grazer"
+  | "flutter"
+  | "shellback"
+  | "lurker"
+  | "snarler";
+
+/** What a mob is currently doing. */
+export type MobStateKind =
+  | "idle"
+  | "wander"
+  | "graze"
+  | "flee"
+  | "chase"
+  | "attack"
+  | "dead";
+
+/**
+ * A mob's full state.
+ *
+ * DETERMINISM: mob AI must be a pure function of (world state, tick). No
+ * mob may read the clock, and a mob's decisions must not depend on the order
+ * in which mobs happen to be updated.
+ */
+export interface MobState {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly position: Vec3;
+  readonly velocity: Vec3;
+  readonly yaw: number;
+  readonly health: number;
+  readonly maxHealth: number;
+  readonly state: MobStateKind;
+  /** Chunk the mob considers home, for wandering. */
+  readonly home: ChunkKey;
+  /** Ticks until the mob next re-evaluates. */
+  readonly aiTimer: number;
+  /** Ticks since the mob spawned. */
+  readonly age: number;
+  readonly onGround: boolean;
+  /** Ticks the mob survives after death, before it is removed. */
+  readonly deathTimer: number;
+}
+
+/**
+ * A mob as stored in a save file.
+ *
+ * M3 extends `WorldSnapshot` with the entities it owns; the contract for the
+ * mob state itself is frozen here.
+ */
+export interface MobSnapshot {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly health: number;
+  readonly state: MobStateKind;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tools
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a tool is for. Original names, not the well-known ones.
+ *
+ * `mattock`  - mining: stone, rubble, ores
+ * `billhook` - felling: timber, foliage
+ * `trowel`   - digging: soil, sand, gravel
+ * `maul`     - breaking: masonry, fixtures, panes
+ * `sabre`    - a weapon, not a digging tool
+ */
+export type ToolKind = "mattock" | "billhook" | "trowel" | "maul" | "sabre";
+
+/**
+ * Tool tiers, named after the world's own materials.
+ *
+ * `timber` (wood) < `slate` (stone) < `ironveil` (iron) < `lumencrystal` (the rare one).
+ */
+export type ToolTier = "timber" | "slate" | "ironveil" | "lumencrystal";
+
+/**
+ * A concrete tool: a kind at a tier.
+ *
+ * `id` is the item id an inventory slot holds, e.g. `"mattock_slate"`.
+ * `multiplier` scales the bare-hand break time: lower is faster, 1.0 is the
+ * same as bare hands, and a tool of the WRONG kind cannot mine the block at
+ * all - see `canBreak` and `breakSecondsWith`.
+ */
+export interface ToolSpec {
+  readonly id: string;
+  readonly kind: ToolKind;
+  readonly tier: ToolTier;
+  /** Multiplier on the bare-hand break time. Lower is faster. */
+  readonly multiplier: number;
+  /** Uses before the tool breaks. */
+  readonly durability: number;
 }

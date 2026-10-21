@@ -153,3 +153,70 @@ may not use `Math.random`, `Date.now`, `performance.now`, DOM APIs,
 and run in Node under Vitest with no GPU, no browser and no canvas.
 
 Import only from `src/core/index.js` (or another file inside `src/core/`).
+
+## Second extension: the operator feature list
+
+Added in the same commit as the feature list (see `docs/ARCHITECTURE.md` §7).
+
+### Break times
+
+```ts
+const BREAK_TIME_SECONDS: Readonly<Record<string, number>>; // 23 distinct values
+function breakSeconds(id: string): number;                    // unknown -> 9.0
+```
+
+`0.1` foliage · `0.12` emberlamp · `0.2` crystpane · `0.25` tidewater · `0.3` emberflow ·
+`0.35` sand · `0.4` gravel · `0.45` clay · `0.55` regolith · `0.6` loam · `0.7` millplank ·
+`0.9` timber · `1.1` masonry · `1.3` rubble · `1.7` slate · `2.2` smeltforge · `2.5` craftbench ·
+`3.2` anthracite · `4.0` ironveil · `5.0` gildenseam · `6.5` lumencrystal · `9.0` voidstone.
+
+### Time and seasons
+
+```ts
+const TICKS_PER_DAY = 14400;      // a day is 12 minutes at 20 ticks/s
+const TICKS_PER_SEASON = 57600;   // a year is four seasons
+const SEASONS: readonly Season[]; // thaw, green, harvest, frost
+const DAY_PHASES: readonly DayPhase[]; // dawn, day, dusk, night
+
+function seasonAt(tick: number): Season;
+function dayPhaseAt(tick: number): DayPhase;
+```
+
+Both are pure functions of the tick. **Never derive time from the wall clock** — the
+purity scanner will reject `Date.now()` in `src/core/`, and it is right to.
+
+`World` gained `tick: number` and `advanceTicks(ticks: number): void`. `World.snapshot()`
+records `season` and `tick`; `World.fromSnapshot()` restores the tick, so a saved world
+keeps its season and its time of day.
+
+### Mobs
+
+```ts
+type MobKind = "grazer" | "flutter" | "shellback" | "lurker" | "snarler";
+type MobStateKind = "idle" | "wander" | "graze" | "flee" | "chase" | "attack" | "dead";
+
+interface MobState {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly position: Vec3;
+  readonly velocity: Vec3;
+  readonly yaw: number;
+  readonly health: number;
+  readonly maxHealth: number;
+  readonly state: MobStateKind;
+  readonly home: ChunkKey;
+  readonly aiTimer: number;
+  readonly age: number;
+  readonly onGround: boolean;
+  readonly deathTimer: number;
+}
+```
+
+Mob AI must be a pure function of `(world state, tick)`: no clock reads, and no decision
+may depend on the order in which mobs happen to be updated.
+
+### Items
+
+```ts
+type ItemId = string;   // block items use the block's name
+```

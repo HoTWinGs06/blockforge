@@ -4,22 +4,28 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "BlockForge — an original, unofficial Minecraft-inspired voxel sandbox.",
+  "description": "BlockForge \u2014 an original, unofficial Minecraft-inspired voxel sandbox.",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "coverage": "vitest run --coverage",
+    "audit": "npm audit",
     "bench": "vitest bench",
+    "build": "vite build",
+    "check": "node scripts/verify.mjs --fast",
+    "coverage": "vitest run --coverage",
+    "coverage:unit": "vitest run --coverage --exclude '**/g2-smoke.test.ts'",
+    "dev": "vite",
+    "gate:bench": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js",
+    "gate:determinism": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js",
+    "gate:selfcheck": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/engineCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/meshCheck.js",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest run",
     "test:e2e": "playwright test",
-    "audit": "npm audit"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "three": "0.186.1",
