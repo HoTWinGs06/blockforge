@@ -66,7 +66,7 @@ export const FINDINGS: readonly Finding[] = [
     id: "F1",
     title: "Object.freeze does not freeze a Set: SOLID_BLOCKS/TRANSPARENT_BLOCKS are mutable global state",
     owner: "opencode",
-    boardTask: "T31",
+    boardTask: "T40",
     status: "open",
     severity: "high",
     promise:
@@ -78,7 +78,7 @@ export const FINDINGS: readonly Finding[] = [
     id: "F2",
     title: "chunkKeyFromString accepts malformed keys and is not the inverse of chunkKeyToString",
     owner: "opencode",
-    boardTask: "T32",
+    boardTask: "T41",
     status: "open",
     severity: "high",
     promise:
@@ -90,7 +90,7 @@ export const FINDINGS: readonly Finding[] = [
     id: "F3",
     title: "Chunk.blocks is a Uint8Array of BlockId ordinals with no exported mapping and no guard",
     owner: "opencode",
-    boardTask: "T33",
+    boardTask: "T42",
     status: "open",
     severity: "medium",
     promise:
@@ -102,7 +102,7 @@ export const FINDINGS: readonly Finding[] = [
     id: "F4",
     title: "chunkKeyToString emits strings its own inverse rejects",
     owner: "opencode",
-    boardTask: "T34",
+    boardTask: "T43",
     status: "open",
     severity: "medium",
     promise:
