@@ -492,38 +492,33 @@ export class Game {
     return { ...this.position };
   }
 
-  /** The handle the browser tests drive. */
+  /**
+   * The handle the browser tests drive.
+   *
+   * ARROW FUNCTIONS, not method shorthand: an object literal's `get state()`
+   * binds `this` to the LITERAL, not to the Game, so the getters would read
+   * the wrong object. The obvious fix - `const game = this` - trips the
+   * repo's own no-this-alias rule, so the arrow functions capture the
+   * enclosing `this` lexically, which is both correct and lint-clean.
+   */
   get handle(): GameHandle {
-    // Captured in a local, because an object literal's getters bind `this` to
-    // the object rather than to the Game.
-    const game = this;
     return {
-      get state() {
-        return game.playerState;
-      },
-      get view() {
-        return { yaw: game.yaw, pitch: game.pitch };
-      },
+      state: () => this.playerState,
+      view: () => ({ yaw: this.yaw, pitch: this.pitch }),
       look: (pitchDelta: number, yawDelta = 0): void => {
         const limit = Math.PI / 2 - 0.001;
-        game.pitch = Math.max(-limit, Math.min(limit, game.pitch + pitchDelta));
-        game.yaw += yawDelta;
+        this.pitch = Math.max(-limit, Math.min(limit, this.pitch + pitchDelta));
+        this.yaw += yawDelta;
       },
-      get targeted() {
-        return game.pickBlock();
-      },
+      targeted: () => this.pickBlock(),
       setBreaking: (holding: boolean): void => {
-        game.breaking = holding;
+        this.breaking = holding;
         if (holding) {
-          game.act(false);
+          this.act(false);
         }
       },
-      get breakProgress() {
-        return game.breakProgress();
-      },
-      get breakingBlock() {
-        return game.breakBlock();
-      },
+      breakProgress: () => this.breakProgress(),
+      breakingBlock: () => this.breakBlock(),
     };
   }
 }
@@ -550,19 +545,19 @@ export function mountGame(canvas: HTMLCanvasElement, engine: EngineBridge): Game
  */
 export interface GameHandle {
   /** The current player state. */
-  readonly state: PlayerState;
+  state(): PlayerState;
   /** Where the player is looking, in radians. */
-  readonly view: { yaw: number; pitch: number };
+  view(): { yaw: number; pitch: number };
   /** Look down (positive) or up (negative) by a number of radians. */
   look(pitchDelta: number, yawDelta?: number): void;
   /** The block the player is currently aiming at, if any. */
-  readonly targeted: { x: number; y: number; z: number } | null;
+  targeted(): { x: number; y: number; z: number } | null;
   /** Start or stop holding the break button. */
   setBreaking(holding: boolean): void;
   /** How far through the current break the player is, 0..1, or null. */
-  readonly breakProgress: number | null;
+  breakProgress(): number | null;
   /** The kind of block being broken, if any. */
-  readonly breakingBlock: BlockId | null;
+  breakingBlock(): BlockId | null;
 }
 
 /** The handle for the game running in this page, if there is one. */
