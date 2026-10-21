@@ -156,19 +156,18 @@ describe("PRIORITY 3: Seeded PRNG Specification (src/core/rng.ts)", () => {
     expect(valuesA).not.toEqual(valuesB);
   });
 
-  // RED-TEAM finding E2 (board T45). The engine was told it had fixed
-  // this and the board records the fix as landed. It was not: fork()
-  // derives the child seed from `this.state` — the parent's CURRENT state
-  // — rather than from the parent's seed. So the same label forked at a
-  // different point in the parent's life gives a different child stream,
-  // and terrain changes depending on the order subsystems happen to draw
-  // in. That is exactly the order-dependence the determinism invariant
-  // forbids.
+  // RED-TEAM finding E2 (board T45). The engine's first handoff claimed
+  // this was fixed and it was not: fork() derived the child seed from
+  // `this.state` — the parent's CURRENT state — rather than from the
+  // parent's seed, so the same label forked at a different point in the
+  // parent's life gave a different child stream, and terrain changed
+  // depending on the order subsystems happened to draw in.
   //
-  // The inner assertion is the FIXED behaviour, so the moment the engine
-  // fixes it this test flips RED and announces that the finding is
-  // closed. TEST AUTHOR owns the conversion to a plain `it` at that point.
-  it.fails("E2: fork must depend only on (seed, label), not on the parent's history", () => {
+  // FIXED by the engine on feature/engine/fix-e1-e2-tunnel: fork() now
+  // derives the child from `this.seed`. This test was an `it.fails` until
+  // that fix landed; it flipped RED to announce the closure, and is now a
+  // plain `it` that asserts the FIXED behaviour and must stay passing.
+  it("E2: fork must depend only on (seed, label), not on the parent's history", () => {
     const early = createRng(42).fork("terrain");
     const lateParent = createRng(42);
     lateParent.nextUint32();
@@ -178,8 +177,23 @@ describe("PRIORITY 3: Seeded PRNG Specification (src/core/rng.ts)", () => {
     }
   });
 
+  it("E2: fork is independent of how much of the parent was consumed", () => {
+    // The same property over a range of consumption histories, not just
+    // one draw: a parent that has been drawn from N times must still
+    // fork the same child stream as a fresh one.
+    for (let draws = 0; draws <= 8; draws++) {
+      const fresh = createRng(1234).fork("terrain");
+      const consumed = createRng(1234);
+      for (let i = 0; i < draws; i++) consumed.nextUint32();
+      const child = consumed.fork("terrain");
+      for (let i = 0; i < 10; i++) {
+        expect(fresh.nextUint32()).toBe(child.nextUint32());
+      }
+    }
+  });
+
   it("control: two fresh parents with the same seed fork the same label to the same stream", () => {
-    // True both before and after the E2 fix, so this control never needs
+    // True before and after the E2 fix, so this control never needed
     // converting: it proves the probe is live without pinning the bug.
     const a = createRng(42).fork("terrain");
     const b = createRng(42).fork("terrain");

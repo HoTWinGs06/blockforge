@@ -47,6 +47,16 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * Timeout for the tests that generate whole chunks.
+ *
+ * Each property run generates two 64 KiB chunks, and the coverage
+ * instrumentation multiplies that cost. Without an explicit budget these
+ * tests sit right on vitest's default 5 s limit and time out when the
+ * suite runs under load — a flaky gate is worse than a slow one.
+ */
+const CHUNK_TEST_TIMEOUT = 30000;
+
 /** The ordinal of a block id. */
 const ordinal = (id: BlockId): number => blockOrdinal(id);
 
@@ -64,7 +74,7 @@ describe("PRIORITY 3: chunked world generation (src/core/world.ts)", () => {
         },
       ),
     );
-  });
+  }, CHUNK_TEST_TIMEOUT);
 
   it("generateChunk produces different blocks for different seeds", () => {
     fc.assert(
@@ -79,7 +89,7 @@ describe("PRIORITY 3: chunked world generation (src/core/world.ts)", () => {
         },
       ),
     );
-  });
+  }, CHUNK_TEST_TIMEOUT);
 
   it("generateChunk produces different blocks for different chunk keys", () => {
     const a = generateChunk(1234, { cx: 0, cz: 0 });
@@ -382,7 +392,7 @@ describe("PRIORITY 3: chunked world generation (src/core/world.ts)", () => {
     for (const block of chunk.blocks) {
       expect(block).toBe(AIR_ORDINAL);
     }
-  });
+  }, CHUNK_TEST_TIMEOUT);
 
   it("chunkIndex agrees with the frozen blockIndex", () => {
     expect(chunkIndex(1, 2, 3)).toBe(1 + CHUNK_SIZE_X * (3 + CHUNK_SIZE_Z * 2));
@@ -411,7 +421,7 @@ describe("PRIORITY 3: chunked world generation (src/core/world.ts)", () => {
     for (const block of chunk.blocks) {
       expect(block).toBe(AIR_ORDINAL);
     }
-  });
+  }, CHUNK_TEST_TIMEOUT);
 
   it("a generated column is solid from the bottom up to its terrain height", () => {
     const seed = 1234;

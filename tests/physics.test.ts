@@ -348,35 +348,37 @@ describe("PRIORITY 3: AABB collision and gravity (src/core/physics.ts)", () => {
     expect(world.isSolid(0, 0, 0)).toBe(false);
   });
 
-  // TEST AUTHOR finding, filed to the board as a new task.
+  // TEST AUTHOR finding, filed to the board as T64.
   //
-  // The engine resolves collisions by testing the box at the DESTINATION
-  // only — the swept path from the start to the destination is never
-  // examined. A body that moves further than one block in a single step
-  // therefore passes clean through a one-block-thick wall or floor.
+  // The engine resolved collisions by testing the box at the DESTINATION
+  // only — the swept path from start to destination was never examined, so
+  // a body that moved further than one block in a single step passed
+  // clean through a one-block-thick wall or floor. At terminal velocity
+  // (60 blocks/s) that is any frame rate below 60 fps, so a falling body
+  // went straight through the ground.
   //
-  // This is not a theoretical concern: the player falls at up to
-  // TERMINAL_VELOCITY (60) blocks per second, so at 30 fps a falling body
-  // moves 2 blocks per step and goes straight through the ground. The
-  // fix is to sub-step the move, or to sweep the box along the path.
-  //
-  // The inner assertions are the FIXED behaviour, so these flip RED the
-  // moment the engine fixes them. TEST AUTHOR owns the conversion.
-  it.fails("a large dt must not tunnel a falling body through a one-block floor", () => {
+  // FIXED by the engine on feature/engine/fix-e1-e2-tunnel: the move is
+  // now split into sub-steps of at most half a block, so every obstacle
+  // is sampled. These tests were `it.fails` until that fix landed; they
+  // flipped RED to announce the closure, and are now plain `it` that
+  // assert the FIXED behaviour and must stay passing.
+  it("a large dt must not tunnel a falling body through a one-block floor", () => {
     const world = floorWorld();
-    let position = { x: 0.5, y: 50, z: 0.5 };
-    let velocity = { x: 0, y: 0, z: 0 };
-    for (let i = 0; i < 500; i++) {
-      const result = stepPhysics(position, velocity, 0.1, world);
-      position = result.position;
-      velocity = result.velocity;
-      if (result.onGround) break;
+    for (const dt of [0.1, 0.25, 0.5, 1.0]) {
+      let position = { x: 0.5, y: 50, z: 0.5 };
+      let velocity = { x: 0, y: 0, z: 0 };
+      for (let i = 0; i < 2000; i++) {
+        const result = stepPhysics(position, velocity, dt, world);
+        position = result.position;
+        velocity = result.velocity;
+        if (result.onGround) break;
+      }
+      // It must have come to rest on the floor, not fallen through it.
+      expect(position.y).toBe(1);
     }
-    // It must have come to rest on the floor, not fallen through it.
-    expect(position.y).toBe(1);
   });
 
-  it.fails("a body must not end up embedded in a wall it stepped through", () => {
+  it("a body must not end up embedded in a wall it stepped through", () => {
     // A two-block-thick wall, and a body that steps two blocks into it.
     const world = solidWorldFromBlocks([
       [-2, 0, 0],
@@ -390,10 +392,42 @@ describe("PRIORITY 3: AABB collision and gravity (src/core/physics.ts)", () => {
     // It must stop flush against the near face of the wall (minX = 0),
     // never inside it.
     expect(collides(bodyAabb(result.position), world)).toBe(false);
+    expect(result.position.x).toBeCloseTo(PLAYER_HALF_WIDTH, 10);
+  });
+
+  it("a body never ends up overlapping a solid block after a multi-block move", () => {
+    // The property the tunnelling bug broke, now pinned over the full
+    // range of move lengths the fix has to handle.
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -3, max: 3 }),
+        fc.integer({ min: -3, max: 3 }),
+        fc.integer({ min: -3, max: 3 }),
+        fc.double({ min: -3, max: 3, noNaN: true }),
+        fc.double({ min: -3, max: 3, noNaN: true }),
+        fc.double({ min: -3, max: 3, noNaN: true }),
+        (x, y, z, dx, dy, dz) => {
+          const world = solidWorldFromBlocks([
+            [x, y, z],
+            [x + 1, y, z],
+            [x, y + 1, z],
+            [x, y, z + 1],
+            [x + 1, y + 1, z],
+            [x + 1, y, z + 1],
+            [x, y + 1, z + 1],
+            [x + 1, y + 1, z + 1],
+          ]);
+          const start = { x: 0.5, y: 0.5, z: 0.5 };
+          if (collides(bodyAabb(start), world)) return;
+          const result = moveWithCollisions(start, { x: 0, y: 0, z: 0 }, { x: dx, y: dy, z: dz }, world);
+          expect(collides(bodyAabb(result.position), world)).toBe(false);
+        },
+      ),
+    );
   });
 
   it("control: a small dt does not tunnel a falling body through the floor", () => {
-    // True both before and after the fix, so this control never needs
+    // True before and after the fix, so this control never needed
     // converting: it proves the probe is live without pinning the bug.
     const world = floorWorld();
     let position = { x: 0.5, y: 50, z: 0.5 };

@@ -163,28 +163,35 @@ describe("PRIORITY 3: value noise (src/core/noise.ts)", () => {
     expect(differed).toBe(true);
   });
 
-  // RED-TEAM finding E1 (board T44). The engine was told it had fixed this
-  // and the board records the fix as landed. It was not: fbm2 still
-  // computes `sum / norm`, and with no octaves both are 0, so the result
-  // is 0/0 = NaN. A NaN height propagates into every block placement that
-  // consumes it, and a NaN block coordinate either indexes out of bounds
-  // or silently writes nothing — a wrong-looking but plausible world, which
-  // is the worst kind of bug to notice.
+  // RED-TEAM finding E1 (board T44). The engine's first handoff claimed
+  // this was fixed and it was not: fbm2 computed `sum / norm`, and with no
+  // octaves both are 0, so the result was 0/0 = NaN. A NaN height
+  // propagates into every block placement that consumes it, and a NaN
+  // block coordinate either indexes out of bounds or silently writes
+  // nothing — a wrong-looking but plausible world, which is the worst
+  // kind of bug to notice.
   //
-  // This is the project's finding convention: the inner assertion is the
-  // FIXED behaviour, so the moment the engine fixes it this test flips
-  // RED and announces that the finding is closed. TEST AUTHOR owns the
-  // conversion to a plain `it` at that point.
-  it.fails("E1: fbm2 must not return NaN for a zero octave count", () => {
+  // FIXED by the engine on feature/engine/fix-e1-e2-tunnel: fbm2 now
+  // clamps the octave count to at least one, so it is total over its whole
+  // input domain. This test was an `it.fails` until that fix landed; it
+  // flipped RED to announce the closure, and is now a plain `it` that
+  // asserts the FIXED behaviour and must stay passing.
+  it("E1: fbm2 must not return NaN for a zero octave count", () => {
     expect(Number.isFinite(fbm2(1234, 10.5, 20.5, 0))).toBe(true);
   });
 
-  it.fails("E1: fbm2 must not return NaN for a negative octave count", () => {
+  it("E1: fbm2 must not return NaN for a negative octave count", () => {
     expect(Number.isFinite(fbm2(1234, 10.5, 20.5, -3))).toBe(true);
   });
 
+  it("E1: fbm2 returns a finite value for every octave count", () => {
+    for (const octaves of [-100, -3, -1, 0, 1, 2, 8, 100]) {
+      expect(Number.isFinite(fbm2(1234, 10.5, 20.5, octaves))).toBe(true);
+    }
+  });
+
   it("control: fbm2 with one or more octaves is finite", () => {
-    // True both before and after the E1 fix, so this control never needs
+    // True before and after the E1 fix, so this control never needed
     // converting: it proves the probe is live without pinning the bug.
     expect(Number.isFinite(fbm2(1234, 10.5, 20.5, 1))).toBe(true);
     expect(Number.isFinite(fbm2(1234, 10.5, 20.5, 4))).toBe(true);
