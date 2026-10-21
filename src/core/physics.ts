@@ -29,6 +29,16 @@ export const PLAYER_HALF_WIDTH = 0.3;
 /** Height of the player's collision box. */
 export const PLAYER_HEIGHT = 1.8;
 
+/**
+ * The height of a ledge the player walks up without jumping.
+ *
+ * One whole block, not the usual half. This matters: the terrain is made of
+ * whole blocks, so a smaller step height would never let the player walk up
+ * anything at all - every ledge would need a jump, and jumping while pressed
+ * against a wall is the case that does not work.
+ */
+export const STEP_HEIGHT = 1.0;
+
 /** Slack used when testing for overlap, so touching faces do not collide. */
 const EPSILON = 1e-9;
 
@@ -179,6 +189,73 @@ export function moveWithCollisions(
   return { position: at, velocity: vel, onGround, collided };
 }
 
+/**
+ * True when the body is standing on something.
+ *
+ * Probed with a thin box just under the feet, so a body that is exactly on a
+ * block top counts as grounded and a body in mid-air does not.
+ */
+function groundedAt(
+  feet: Vec3,
+  world: SolidWorld,
+  halfWidth: number,
+  height: number,
+): boolean {
+  const probe = bodyAabb({ x: feet.x, y: feet.y - 0.05, z: feet.z }, halfWidth, height);
+  return collides(probe, world);
+}
+
+/**
+ * The feet height the body would stand at after walking up onto a ledge, or
+ * null when it cannot step up.
+ *
+ * The rules, in order:
+ *   - not while rising: stepping up during a jump is climbing a wall
+ *   - only from the ground: in mid-air this would be wall-climbing
+ *   - there must be room for the body where it would land
+ *   - there must be a ledge top within STEP_HEIGHT of the feet, in the
+ *     columns the body would occupy
+ */
+function stepUpY(
+  feet: Vec3,
+  target: Vec3,
+  deltaY: number,
+  world: SolidWorld,
+  halfWidth: number,
+  height: number,
+): number | null {
+  if (deltaY > 0) return null;
+  if (!groundedAt(feet, world, halfWidth, height)) return null;
+
+  const raisedY = feet.y + STEP_HEIGHT;
+  if (collides(bodyAabb({ x: target.x, y: raisedY, z: target.z }, halfWidth, height), world)) {
+    return null;
+  }
+
+  const [minX, maxX] = blockRange(target.x - halfWidth, target.x + halfWidth);
+  const [minZ, maxZ] = blockRange(target.z - halfWidth, target.z + halfWidth);
+  const top = Math.floor(raisedY);
+  const bottom = Math.floor(feet.y) + 1;
+
+  for (let y = top; y >= bottom; y--) {
+    let solidBelow = false;
+    let clearAbove = true;
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (world.isSolid(x, y - 1, z)) solidBelow = true;
+        if (world.isSolid(x, y, z)) clearAbove = false;
+      }
+    }
+    if (solidBelow && clearAbove) {
+      if (!collides(bodyAabb({ x: target.x, y, z: target.z }, halfWidth, height), world)) {
+        return y;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
 /** One collision-resolved move, with no sub-stepping. */
 function moveOnce(
   position: Vec3,
@@ -202,13 +279,22 @@ function moveOnce(
     const candidate = bodyAabb({ x: x + delta.x, y, z }, halfWidth, height);
     const hits = overlappingBlocks(candidate, world);
     if (hits.length > 0) {
-      collided = true;
-      vx = 0;
-      // Stop flush against the nearest face along X.
-      if (delta.x > 0) {
-        x = Math.min(...hits.map(([bx]) => bx)) - halfWidth;
+      // A low ledge should be walked up, not walked into. Without this the
+      // player is stopped by every single block of terrain and has to jump
+      // to climb anything.
+      const steppedY = stepUpY({ x, y, z }, { x: x + delta.x, y, z }, delta.y, world, halfWidth, height);
+      if (steppedY !== null) {
+        x = x + delta.x;
+        y = steppedY;
       } else {
-        x = Math.max(...hits.map(([bx]) => bx + 1)) + halfWidth;
+        collided = true;
+        vx = 0;
+        // Stop flush against the nearest face along X.
+        if (delta.x > 0) {
+          x = Math.min(...hits.map(([bx]) => bx)) - halfWidth;
+        } else {
+          x = Math.max(...hits.map(([bx]) => bx + 1)) + halfWidth;
+        }
       }
     } else {
       x = candidate.minX + halfWidth;
@@ -240,12 +326,18 @@ function moveOnce(
     const candidate = bodyAabb({ x, y, z: z + delta.z }, halfWidth, height);
     const hits = overlappingBlocks(candidate, world);
     if (hits.length > 0) {
-      collided = true;
-      vz = 0;
-      if (delta.z > 0) {
-        z = Math.min(...hits.map(([, , bz]) => bz)) - halfWidth;
+      const steppedY = stepUpY({ x, y, z }, { x, y, z: z + delta.z }, delta.y, world, halfWidth, height);
+      if (steppedY !== null) {
+        z = z + delta.z;
+        y = steppedY;
       } else {
-        z = Math.max(...hits.map(([, , bz]) => bz + 1)) + halfWidth;
+        collided = true;
+        vz = 0;
+        if (delta.z > 0) {
+          z = Math.min(...hits.map(([, , bz]) => bz)) - halfWidth;
+        } else {
+          z = Math.max(...hits.map(([, , bz]) => bz + 1)) + halfWidth;
+        }
       }
     } else {
       z = candidate.minZ + halfWidth;
