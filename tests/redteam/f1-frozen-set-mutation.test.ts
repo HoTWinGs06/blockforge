@@ -4,56 +4,52 @@
  * OWNERSHIP: RED-TEAM (tests/redteam/). Owner of the fix: ARCHITECT (opencode)
  * — src/core/types.ts is theirs.
  *
+ * STATUS: FIXED (T40). The architect's contract hardening now ships
+ * `immutableSet()`, which hands out a Set whose mutating methods THROW. The
+ * armed `it.fails` stubs have been converted to plain `it` regression guards
+ * that assert the FIXED behaviour, so a future regression of the guard fails
+ * loudly instead of silently re-arming a stale alarm.
+ *
  * THE PROMISE
  * -----------
  * src/core/types.ts declares:
  *
- *     export const SOLID_BLOCKS: ReadonlySet<BlockId> = Object.freeze(
- *       new Set<BlockId>([...]),
- *     );
+ *     export const SOLID_BLOCKS: ReadonlySet<BlockId> = ...
  *
- * `ReadonlySet` says "you may not mutate this" and `Object.freeze` says
- * "this object is frozen". Both are supposed to mean: the set of solid
- * blocks cannot change while the program runs.
+ * `ReadonlySet` says "you may not mutate this", and the fix makes that
+ * true: the published set of solid blocks cannot change while the program
+ * runs.
  *
- * THE HOLE
- * --------
+ * THE HOLE (as it was)
+ * --------------------
+ * The original code was `Object.freeze(new Set<BlockId>([...]))`.
  * `Object.freeze` on a Set does NOT freeze the Set's contents. Object.freeze
  * makes an object's own PROPERTIES non-writable; a Set's members live in
- * internal slots ([[SetData]]) that Object.freeze cannot reach. Set.prototype
- * .add and .delete still work, and they still mutate the same shared instance
- * that every other module in the process holds a reference to.
+ * internal slots ([[SetData]]) that Object.freeze cannot reach.
+ * Set.prototype.add and .delete still work, and they still mutate the same
+ * shared instance that every other module in the process holds a reference
+ * to.
  *
- * WHY IT MATTERS HERE
- * -------------------
- * This is shared mutable global state in the layer that is supposed to be
- * pure. A single stray `SOLID_BLOCKS.add(...)` anywhere in the codebase
- * changes collision behaviour for every other system, and the change is
- * invisible: Object.isFrozen() still reports true, so a reviewer's eye goes
- * straight past it. It is also a determinism hazard: world behaviour then
- * depends on the ORDER in which modules happened to run, which is exactly
+ * WHY IT MATTERED
+ * ---------------
+ * Shared mutable global state in the layer that is supposed to be pure. A
+ * single stray `SOLID_BLOCKS.add(...)` anywhere in the codebase changed
+ * collision behaviour for every other system, invisibly: `Object.isFrozen()`
+ * still reported true. It was also a determinism hazard: world behaviour then
+ * depended on the ORDER in which modules happened to run, which is exactly
  * the class of bug the project's single top invariant forbids.
  *
- * REPRO
- * -----
+ * REPRO (against the old code)
+ * -----------------------------
  *     SOLID_BLOCKS.add("air" as BlockId);   // no throw
  *     SOLID_BLOCKS.has("air");              // true — air is now solid
- *
- * FIX DIRECTION (for the owner, not for me — I do not edit implementation)
- * -------------------------------------------------------------------------
- * Options, cheapest first:
- *   1. Keep the Set but hand out a Proxy that throws on add/delete/clear.
- *   2. Export a frozen ARRAY (Object.freeze([...]) really does freeze) plus
- *      an `isSolid(block)` helper that does a lookup.
- *   3. Keep the Set but never export it — export only lookup functions.
- * Any of these makes the promise true. The frozen-SET idiom is the bug.
  *
  * NOTE ON THE ASSERTIONS
  * ----------------------
  * They are deliberately MECHANISM-AGNOSTIC: they assert that the published
  * set of solid blocks cannot change, not that a particular call throws. A
- * Proxy that throws, a frozen array, or a getter returning a copy all close
- * this finding. That way the test closes the finding when the owner picks
+ * Proxy that throws, a frozen array, or a getter returning a copy all
+ * satisfy them. That way the test closes the finding when the owner picks
  * ANY of those routes, and cannot be satisfied by a cosmetic change.
  */
 
@@ -63,7 +59,7 @@ import { BlockId, SOLID_BLOCKS, TRANSPARENT_BLOCKS } from "../../src/core/index.
 /**
  * Try to mutate a set and report whether the published contents changed.
  * The mutation is attempted through a cast, because the TypeScript type
- * already forbids it — the hole is at RUNTIME, not in the type system.
+ * already forbids it — the hole was at RUNTIME, not in the type system.
  *
  * The original contents are restored afterwards. A red-team test must never
  * leave the contract's global state damaged for the next test in the file.
@@ -83,12 +79,18 @@ function tryMutate(
   const changed = [...target].join(",") !== beforeText;
 
   // Restore: put back exactly what was there, and remove anything added.
-  const mutable = target as Set<BlockId>;
-  for (const id of [...target]) {
-    if (!before.includes(id)) mutable.delete(id);
-  }
-  for (const id of before) {
-    if (!target.has(id)) mutable.add(id);
+  // The guard may itself reject the write, so the restore is best-effort —
+  // if the set rejected the mutation there is nothing to restore.
+  try {
+    const mutable = target as Set<BlockId>;
+    for (const id of [...target]) {
+      if (!before.includes(id)) mutable.delete(id);
+    }
+    for (const id of before) {
+      if (!target.has(id)) mutable.add(id);
+    }
+  } catch {
+    // The set refused the restore too: it is immutable, so it never changed.
   }
 
   return { threw, changed };
@@ -104,7 +106,8 @@ describe("F1 — control: what Object.freeze actually guarantees", () => {
   });
 
   it("control: Object.freeze on a Set does NOT prevent mutation", () => {
-    // Documented language behaviour, not a bug in the test.
+    // Documented language behaviour, not a bug in the test. This is WHY
+    // freezing a Set was never a guard.
     const frozen = Object.freeze(new Set(["a", "b"]));
     expect(Object.isFrozen(frozen)).toBe(true);
     frozen.add("c");
@@ -113,49 +116,62 @@ describe("F1 — control: what Object.freeze actually guarantees", () => {
     expect(frozen.has("a")).toBe(false);
   });
 
-  it("control: the contract's sets report themselves as frozen", () => {
-    expect(Object.isFrozen(SOLID_BLOCKS)).toBe(true);
-    expect(Object.isFrozen(TRANSPARENT_BLOCKS)).toBe(true);
+  it("control: the contract's sets are no longer published as frozen Sets", () => {
+    // The fix replaced `Object.freeze(new Set(...))` with a guard that
+    // rejects the mutating methods outright, so the published object is no
+    // longer a frozen Set — Object.isFrozen() is now false and immutability
+    // comes from the guard instead. This control pins that shape so the
+    // regression guards below are known to be testing the real thing.
+    expect(Object.isFrozen(SOLID_BLOCKS)).toBe(false);
   });
 
-  it("control: SOLID_BLOCKS is currently mutable at runtime (the hole)", () => {
+  it("control: SOLID_BLOCKS is immutable at runtime (the hole is closed)", () => {
     const result = tryMutate(SOLID_BLOCKS, (set) => set.add(BlockId.Air));
-    expect(result.changed).toBe(true);
+    expect(result.changed).toBe(false);
   });
 });
 
 describe("F1 — the published block sets must not be mutable at runtime", () => {
-  it.fails("F1: SOLID_BLOCKS must not change when add() is attempted", () => {
+  it("F1: SOLID_BLOCKS must not change when add() is attempted", () => {
     const result = tryMutate(SOLID_BLOCKS, (set) => set.add(BlockId.Air));
     expect(result.changed).toBe(false);
   });
 
-  it.fails("F1: SOLID_BLOCKS must not change when delete() is attempted", () => {
+  it("F1: SOLID_BLOCKS must not change when delete() is attempted", () => {
     const result = tryMutate(SOLID_BLOCKS, (set) => set.delete(BlockId.Slate));
     expect(result.changed).toBe(false);
   });
 
-  it.fails("F1: SOLID_BLOCKS must not change when clear() is attempted", () => {
+  it("F1: SOLID_BLOCKS must not change when clear() is attempted", () => {
     const result = tryMutate(SOLID_BLOCKS, (set) => set.clear());
     expect(result.changed).toBe(false);
   });
 
-  it.fails("F1: TRANSPARENT_BLOCKS must not change when add() is attempted", () => {
+  it("F1: TRANSPARENT_BLOCKS must not change when add() is attempted", () => {
     const result = tryMutate(TRANSPARENT_BLOCKS, (set) => set.add(BlockId.Slate));
     expect(result.changed).toBe(false);
   });
 
-  it.fails("F1: TRANSPARENT_BLOCKS must not change when delete() is attempted", () => {
+  it("F1: TRANSPARENT_BLOCKS must not change when delete() is attempted", () => {
     const result = tryMutate(TRANSPARENT_BLOCKS, (set) => set.delete(BlockId.Air));
     expect(result.changed).toBe(false);
   });
 
-  it.fails("F1: a consumer must not be able to rewrite collision rules for the process", () => {
+  it("F1: a consumer must not be able to rewrite collision rules for the process", () => {
     // The realistic accident: a module "helpfully" registers a new solid
     // block. With a genuinely immutable set this is impossible; with a
     // frozen Set it silently rewrites global game rules.
     const result = tryMutate(SOLID_BLOCKS, (set) => set.add(BlockId.Air));
     expect(result.changed).toBe(false);
     expect(SOLID_BLOCKS.has(BlockId.Air)).toBe(false);
+  });
+
+  it("F1: the published sets must still be usable as sets (regression guard)", () => {
+    // The guard must not break the read side: consumers keep using .has(),
+    // .size and iteration exactly as before.
+    expect(SOLID_BLOCKS.has(BlockId.Voidstone)).toBe(true);
+    expect(TRANSPARENT_BLOCKS.has(BlockId.Air)).toBe(true);
+    expect(SOLID_BLOCKS.size).toBeGreaterThan(0);
+    expect([...SOLID_BLOCKS].length).toBe(SOLID_BLOCKS.size);
   });
 });

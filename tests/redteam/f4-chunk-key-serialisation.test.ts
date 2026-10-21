@@ -5,6 +5,12 @@
  * OWNERSHIP: RED-TEAM (tests/redteam/). Owner of the fix: ARCHITECT (opencode)
  * — src/core/constants.ts is theirs.
  *
+ * STATUS: FIXED (T43). chunkKeyToString now validates that both coordinates
+ * are safe integers and throws a RangeError otherwise, so the two functions
+ * really are inverses over the same domain. The armed `it.fails` stubs have
+ * been converted to plain `it` regression guards asserting the FIXED
+ * behaviour.
+ *
  * THE PROMISE
  * -----------
  * src/core/constants.ts:
@@ -18,10 +24,10 @@
  * If one is the inverse of the other, then whatever chunkKeyToString emits
  * must be readable back.
  *
- * THE HOLE
- * --------
- * chunkKeyToString does no validation at all — it interpolates whatever
- * numbers it is handed. So it happily emits:
+ * THE HOLE (as it was)
+ * --------------------
+ * chunkKeyToString did no validation at all — it interpolated whatever
+ * numbers it was handed. So it happily emitted:
  *
  *     chunkKeyToString({ cx: 1.5, cz: 2 })  -> "1.5,2"   (inverse THROWS)
  *     chunkKeyToString({ cx: NaN, cz: 0 })  -> "NaN,0"   (inverse THROWS)
@@ -30,28 +36,17 @@
  * A key that the engine can produce but the save file cannot read back is a
  * silent data-loss path: the world is written, and on reload the chunk
  * cannot be addressed.
- *
- * REPRO
- * -----
- *     chunkKeyToString({ cx: 1.5, cz: 2 }) === "1.5,2"
- *     chunkKeyFromString("1.5,2")            // throws
- *
- * FIX DIRECTION (for the owner)
- * -----------------------------
- * chunkKeyToString should validate that cx and cz are safe integers and
- * throw otherwise, so the two functions really are inverses over the same
- * domain. (Note: -0 must survive as "0" — see the control below.)
  */
 
 import { describe, expect, it } from "vitest";
 import { chunkKeyFromString, chunkKeyToString } from "../../src/core/index.js";
 
 describe("F4 — control: the current serialiser's actual behaviour", () => {
-  it("control: chunkKeyToString currently emits '1.5,2' for a fractional key", () => {
-    expect(chunkKeyToString({ cx: 1.5, cz: 2 })).toBe("1.5,2");
+  it("control: chunkKeyToString now rejects a fractional key", () => {
+    expect(() => chunkKeyToString({ cx: 1.5, cz: 2 })).toThrow(RangeError);
   });
 
-  it("control: that emitted string cannot be read back", () => {
+  it("control: a fractional key cannot be read back either", () => {
     expect(() => chunkKeyFromString("1.5,2")).toThrow();
   });
 
@@ -61,19 +56,19 @@ describe("F4 — control: the current serialiser's actual behaviour", () => {
 });
 
 describe("F4 — chunkKeyToString must not emit unreadable keys", () => {
-  it.fails("F4: a fractional coordinate must be rejected at serialisation time", () => {
+  it("F4: a fractional coordinate must be rejected at serialisation time", () => {
     expect(() => chunkKeyToString({ cx: 1.5, cz: 2 })).toThrow();
   });
 
-  it.fails("F4: NaN must be rejected at serialisation time", () => {
+  it("F4: NaN must be rejected at serialisation time", () => {
     expect(() => chunkKeyToString({ cx: Number.NaN, cz: 0 })).toThrow();
   });
 
-  it.fails("F4: Infinity must be rejected at serialisation time", () => {
+  it("F4: Infinity must be rejected at serialisation time", () => {
     expect(() => chunkKeyToString({ cx: 0, cz: Number.POSITIVE_INFINITY })).toThrow();
   });
 
-  it.fails("F4: whatever is serialised must be readable back", () => {
+  it("F4: whatever is serialised must be readable back", () => {
     const keys = [
       { cx: 0, cz: 0 },
       { cx: -1, cz: -1 },
@@ -89,6 +84,19 @@ describe("F4 — chunkKeyToString must not emit unreadable keys", () => {
         continue; // rejected at serialisation: correct behaviour
       }
       expect(() => chunkKeyFromString(text)).not.toThrow();
+    }
+  });
+
+  it("F4: every key the serialiser accepts must round-trip exactly", () => {
+    const keys = [
+      { cx: 0, cz: 0 },
+      { cx: -1, cz: -1 },
+      { cx: 2147483647, cz: -2147483648 },
+    ];
+    for (const key of keys) {
+      const text = chunkKeyToString(key);
+      expect(chunkKeyFromString(text)).toEqual(key);
+      expect(chunkKeyToString(chunkKeyFromString(text))).toBe(text);
     }
   });
 });

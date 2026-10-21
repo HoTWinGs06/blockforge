@@ -11,7 +11,7 @@
  *
  * HOW THE TESTS ARE ENCODED
  * -------------------------
- * Each finding test uses Vitest's `it.fails(...)`:
+ * An OPEN finding is encoded with Vitest's `it.fails(...)`:
  *
  *   - while the bug exists, the inner assertion fails, `it.fails` reports
  *     GREEN, and the shared suite stays green for every other agent;
@@ -19,9 +19,12 @@
  *     `it.fails` reports RED ("expected to fail but passed"), and the
  *     finding announces itself as closed.
  *
- * A finding is therefore never silently forgotten: it flips the suite red
- * when it is fixed, and RED-TEAM converts it to a plain `it` in the same
- * commit that closes it.
+ * A CLOSED finding is encoded as a plain `it(...)` that asserts the FIXED
+ * behaviour. That is the whole point of the alarm mechanism: a finding is
+ * never silently forgotten, and once it is closed the test becomes a
+ * REGRESSION GUARD. An armed `it.fails` left behind after the fix is a
+ * STALE ALARM: it breaks the shared build for every other agent, and it
+ * breaks it in the worst way — silently, and only on the branch that owns it.
  *
  * Each file also contains a plain `it("control: ...")` that pins the CURRENT
  * behaviour, so the probe itself is proven to be wired correctly and a green
@@ -35,8 +38,9 @@
  * OWNERS
  * ------
  * src/core/types.ts and src/core/constants.ts are ARCHITECT's (opencode).
- * server/ and src/net/ are NETCODE's. src/core/{world,meshing,physics} and
- * src/engine/ are ENGINE's (hermes-linux).
+ * server/ and src/net/ are NETCODE's. src/core/{world,meshing,physics,rng,noise}
+ * and src/engine/ are ENGINE's (hermes-linux). tests/ proper is the TEST
+ * AUTHOR's (antigravity).
  */
 
 export interface Finding {
@@ -67,10 +71,10 @@ export const FINDINGS: readonly Finding[] = [
     title: "Object.freeze does not freeze a Set: SOLID_BLOCKS/TRANSPARENT_BLOCKS are mutable global state",
     owner: "opencode",
     boardTask: "T40",
-    status: "open",
+    status: "closed",
     severity: "high",
     promise:
-      "SOLID_BLOCKS and TRANSPARENT_BLOCKS are declared ReadonlySet<BlockId> and wrapped in Object.freeze, so they must not change during a run.",
+      "SOLID_BLOCKS and TRANSPARENT_BLOCKS are declared ReadonlySet<BlockId>, so they must not change during a run.",
     repro:
       'SOLID_BLOCKS.add("air" as BlockId); // no error, and SOLID_BLOCKS.has("air") is now true',
   },
@@ -79,31 +83,31 @@ export const FINDINGS: readonly Finding[] = [
     title: "chunkKeyFromString accepts malformed keys and is not the inverse of chunkKeyToString",
     owner: "opencode",
     boardTask: "T41",
-    status: "open",
+    status: "closed",
     severity: "high",
     promise:
       "chunkKeyFromString throws on malformed input, and chunkKeyToString is its inverse, so chunkKeyToString(chunkKeyFromString(s)) === s.",
     repro:
-      'chunkKeyFromString(",") returns {cx:0,cz:0}; chunkKeyFromString("0x10,2") returns {cx:16,cz:2}; chunkKeyFromString("1,") and chunkKeyFromString("1,0") are the same chunk.',
+      'chunkKeyFromString(",") returned {cx:0,cz:0}; chunkKeyFromString("0x10,2") returned {cx:16,cz:2}; chunkKeyFromString("1,") and chunkKeyFromString("1,0") were the same chunk.',
   },
   {
     id: "F3",
     title: "Chunk.blocks is a Uint8Array of BlockId ordinals with no exported mapping and no guard",
     owner: "opencode",
     boardTask: "T42",
-    status: "open",
+    status: "closed",
     severity: "medium",
     promise:
       "Chunk.blocks stores one byte per block, indexed by BlockId ordinal, so every byte value in 0..255 must either resolve to a BlockId or be rejected by core.",
     repro:
-      "ALL_BLOCK_IDS[200] is undefined: 233 of 256 byte values are representable and none of them can be validated or rejected by any exported core function.",
+      "ALL_BLOCK_IDS[200] was undefined: 233 of 256 byte values were representable and none of them could be validated or rejected by any exported core function.",
   },
   {
     id: "F4",
     title: "chunkKeyToString emits strings its own inverse rejects",
     owner: "opencode",
     boardTask: "T43",
-    status: "open",
+    status: "closed",
     severity: "medium",
     promise:
       "chunkKeyToString and chunkKeyFromString are inverses, so a key that is serialised can always be read back.",
@@ -115,7 +119,7 @@ export const FINDINGS: readonly Finding[] = [
     title: "Engine fbm2() returns NaN for octaves <= 0 (0/0) - NaN heights propagate into world generation",
     owner: "hermes-linux",
     boardTask: "T44",
-    status: "open",
+    status: "closed",
     severity: "high",
     promise: "fbm2 is the terrain height function and must return a finite number for every input.",
     repro: "fbm2(1234, 10.5, 20.5, 0) === NaN; fbm2(1234, 10.5, 20.5, -3) === NaN",
@@ -125,7 +129,7 @@ export const FINDINGS: readonly Finding[] = [
     title: "Engine SeededRng.fork() mixes the parent's CURRENT state, not its seed - the child stream shifts with the parent's consumption history",
     owner: "hermes-linux",
     boardTask: "T45",
-    status: "open",
+    status: "closed",
     severity: "high",
     promise:
       "fork() must derive a child stream from (seed, label) alone, so subsystems never interfere with each other or with generation order.",
@@ -134,10 +138,10 @@ export const FINDINGS: readonly Finding[] = [
   },
   {
     id: "E3",
-    title: "Engine chunkIndex() bypasses the frozen blockIndex() guard and silently aliases out-of-range coordinates onto other blocks",
+    title: "Engine chunkIndex() bypassed the frozen blockIndex() guard and silently aliased out-of-range coordinates onto other blocks",
     owner: "hermes-linux",
     boardTask: "T46",
-    status: "open",
+    status: "closed",
     severity: "high",
     promise: "No path may bypass the frozen blockIndex() RangeError guard.",
     repro:
@@ -146,14 +150,40 @@ export const FINDINGS: readonly Finding[] = [
   {
     id: "E4",
     title:
-      "Engine noise truncates coordinates and seeds to 32 bits - terrain aliases and fbm2(2^32) === fbm2(0)",
+      "Engine noise truncated coordinates and seeds to 32 bits - terrain aliased and fbm2(2^32) === fbm2(0)",
     owner: "hermes-linux",
     boardTask: "T47",
-    status: "open",
+    status: "closed",
     severity: "medium",
     promise: "Distinct world seeds must produce distinct worlds, and lattice coordinates must not alias.",
     repro:
       "fbm2(4294967296, 10.5, 20.5, 1) === fbm2(0, 10.5, 20.5, 1) === 0.7303423706325702; valueNoise2(5, 2^31, 0) === valueNoise2(5, -2^31, 0)",
+  },
+  {
+    id: "E5",
+    title:
+      "Engine src/core/rng.ts still truncates the SEED to 32 bits - createRng(2^32) and createRng(0) are the same stream, and two worlds with those seeds hash the same",
+    owner: "hermes-linux",
+    boardTask: "T98",
+    status: "open",
+    severity: "medium",
+    promise:
+      "A world seed is a number, and World.hash() documents that 'two worlds with different seeds can never hash the same however few chunks they have loaded'.",
+    repro:
+      "createRng(4294967296) and createRng(0) produce the identical stream 1684164658,3653269916,...; new World(4294967296).hash() === new World(0).hash() === '4b95f515'",
+  },
+  {
+    id: "T4",
+    title:
+      "The TEST AUTHOR's purity scanner matches DOM globals on a bare identifier, so globalThis.window slips through",
+    owner: "antigravity",
+    boardTask: "T99",
+    status: "open",
+    severity: "low",
+    promise:
+      "src/core/ must not touch the DOM; a DOM global reached through globalThis is exactly as much a DOM dependency as a bare one.",
+    repro:
+      "rulesFor('const w = globalThis.window;') reports no violation, while rulesFor('const w = window;') reports 'dom-global'.",
   },
 ];
 

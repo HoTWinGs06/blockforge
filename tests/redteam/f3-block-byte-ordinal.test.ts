@@ -4,6 +4,12 @@
  * OWNERSHIP: RED-TEAM (tests/redteam/). Owner of the fix: ARCHITECT (opencode)
  * — src/core/types.ts is theirs.
  *
+ * STATUS: FIXED (T42). The contract now exports the byte/ordinal mapping
+ * (`blockIdToByte`, `byteToBlockId`, `isValidBlockByte`, `blockOrdinal`,
+ * `blockFromOrdinal`) and REJECTS any byte that does not name a block kind.
+ * The armed `it.fails` stubs have been converted to plain `it` regression
+ * guards that assert the FIXED behaviour.
+ *
  * THE PROMISE
  * -----------
  * src/core/types.ts, on the Chunk interface:
@@ -13,40 +19,39 @@
  *     readonly blocks: Uint8Array;
  *
  * A Uint8Array holds 0..255. BlockId has 23 values. So 233 of the 256
- * representable byte values have no BlockId, and the contract exports NO
+ * representable byte values have no BlockId, and the contract must export a
  * function that maps a byte to a BlockId or rejects it.
  *
- * THE HOLE
- * --------
- * "indexed by BlockId ordinal" is only a comment. There is no exported
- * ordinal mapping, so every consumer of a chunk has to invent its own:
- * one module may use ALL_BLOCK_IDS.indexOf(id), another may hardcode a
- * table, a third may use the enum's declaration order. If two of them
- * disagree by one position, every block in every saved world silently
- * becomes a different block — with no error anywhere.
+ * THE HOLE (as it was)
+ * --------------------
+ * "indexed by BlockId ordinal" was only a comment. There was no exported
+ * ordinal mapping, so every consumer of a chunk had to invent its own: one
+ * module may use ALL_BLOCK_IDS.indexOf(id), another may hardcode a table, a
+ * third may use the enum's declaration order. If two of them disagree by
+ * one position, every block in every saved world silently becomes a
+ * different block — with no error anywhere.
  *
- * And a corrupt or hostile byte (200, say) has no defined meaning: it
- * resolves to undefined, and nothing in core rejects it.
+ * And a corrupt or hostile byte (200, say) had no defined meaning: it
+ * resolved to undefined, and nothing in core rejected it.
  *
- * WHY IT MATTERS HERE
- * -------------------
+ * WHY IT MATTERED
+ * ---------------
  * This is the byte-level seam between the pure core and everything that
  * stores or transmits blocks. The save format (M2) and the wire protocol
- * (M4) both carry these bytes. A hole here is a hole in the project's
- * top invariant, not just a missing convenience function.
- *
- * FIX DIRECTION (for the owner)
- * -----------------------------
- * Export the mapping from src/core (e.g. `blockIdToOrdinal(id)` /
- * `ordinalToBlockId(byte)` / `isValidBlockOrdinal(byte)`), or make the
- * block array a typed array with a validated constructor. The engine and
- * the server both need it, so it belongs in the frozen contract rather
- * than in each of them.
+ * (M4) both carry these bytes. A hole here is a hole in the project's top
+ * invariant, not just a missing convenience function.
  */
 
 import { describe, expect, it } from "vitest";
 import * as core from "../../src/core/index.js";
-import { ALL_BLOCK_IDS, CHUNK_VOLUME, type Chunk } from "../../src/core/index.js";
+import {
+  ALL_BLOCK_IDS,
+  BLOCK_ID_COUNT,
+  CHUNK_VOLUME,
+  byteToBlockId,
+  isValidBlockByte,
+  type Chunk,
+} from "../../src/core/index.js";
 
 /** Exported functions in the core barrel whose name suggests a byte mapping. */
 function mappingFunctions(): Array<{ name: string; fn: (...args: unknown[]) => unknown }> {
@@ -65,30 +70,44 @@ describe("F3 — control: the byte space and the id space do not line up", () =>
     expect(256 - ALL_BLOCK_IDS.length).toBe(233);
   });
 
-  it("control: an out-of-range ordinal currently resolves to undefined", () => {
+  it("control: an out-of-range ordinal is not a BlockId", () => {
     const byte = ALL_BLOCK_IDS.length + 1;
     expect(ALL_BLOCK_IDS[byte]).toBeUndefined();
   });
-  it("control: the core barrel exports no byte/ordinal mapping today", () => {
-    expect(mappingFunctions()).toEqual([]);
+
+  it("control: the core barrel now exports the byte/ordinal mapping", () => {
+    // The hole was that NOTHING was exported. The fix exports the mapping,
+    // so this control now pins the FIXED shape.
+    expect(mappingFunctions().length).toBeGreaterThan(0);
   });
 });
 
 describe("F3 — every byte in a chunk must map to a BlockId or be rejected", () => {
-  it.fails("F3: core must export a way to convert a block byte to a BlockId", () => {
+  it("F3: core must export a way to convert a block byte to a BlockId", () => {
     const fns = mappingFunctions();
     expect(fns.length).toBeGreaterThan(0);
   });
 
-  it.fails("F3: a byte with no BlockId must be detectable, not silently undefined", () => {
+  it("F3: a byte with no BlockId must be detectable, not silently undefined", () => {
     const invalidByte = ALL_BLOCK_IDS.length + 1;
-    const fns = mappingFunctions();
-    // With a mapping exported, an invalid byte must be rejectable. Until
-    // then the only possible answer is undefined, which nothing checks.
-    const decoded = fns.length
-      ? fns[0]?.fn(invalidByte)
-      : (ALL_BLOCK_IDS[invalidByte] as unknown);
-    expect(decoded).toBeDefined();
+    expect(isValidBlockByte(invalidByte)).toBe(false);
+    expect(() => byteToBlockId(invalidByte)).toThrow(RangeError);
+  });
+
+  it("F3: every valid byte must round-trip to the same BlockId", () => {
+    for (let byte = 0; byte < BLOCK_ID_COUNT; byte++) {
+      const id = byteToBlockId(byte);
+      expect(ALL_BLOCK_IDS[byte]).toBe(id);
+    }
+  });
+
+  it("F3: every byte outside the id space must be rejected", () => {
+    for (const byte of [BLOCK_ID_COUNT, 200, 255]) {
+      expect(isValidBlockByte(byte)).toBe(false);
+      expect(() => byteToBlockId(byte)).toThrow(RangeError);
+    }
+    // ...and the out-of-space bytes are the majority, which is the point.
+    expect(256 - BLOCK_ID_COUNT).toBe(233);
   });
 
   it("the id->ordinal mapping must be unique and stable (regression guard)", () => {
