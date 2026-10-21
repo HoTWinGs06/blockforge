@@ -33,7 +33,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,6 +117,53 @@ export function transpileToTempDir(entryPoint: string, workDir: string): string 
   }
 
   // A package.json with "type": "module" so the emitted .js files are ESM.
+  writeFileSync(
+    join(outDir, "package.json"),
+    JSON.stringify({ type: "module" }, null, 2),
+    "utf8",
+  );
+
+  return outDir;
+}
+
+/**
+ * Transpile a whole directory of TypeScript into a temp directory of real
+ * ".js" files, keeping the directory layout.
+ *
+ * Use this when the code to run does not live under REPO_ROOT (e.g. another
+ * agent's worktree): pass that directory as `root` and the emitted layout
+ * mirrors it.
+ */
+export function transpileDirToTempDir(dir: string, workDir: string): string {
+  const outDir = mkdtempSync(join(workDir, "bf-det-"));
+  const files: string[] = [];
+  const walk = (current: string): void => {
+    for (const entry of readdirSync(current).sort()) {
+      const full = join(current, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (full.endsWith(".ts")) files.push(full);
+    }
+  };
+  walk(dir);
+
+  const compilerOptions: ts.CompilerOptions = {
+    target: ts.ScriptTarget.ES2023,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    verbatimModuleSyntax: true,
+  };
+
+  for (const file of files) {
+    const emitted = ts.transpileModule(readFileSync(file, "utf8"), {
+      compilerOptions,
+      fileName: file,
+    }).outputText;
+    const rel = file.slice(dir.length + 1).replace(/\.ts$/, ".js");
+    const target = join(outDir, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, emitted, "utf8");
+  }
+
   writeFileSync(
     join(outDir, "package.json"),
     JSON.stringify({ type: "module" }, null, 2),
