@@ -18,6 +18,13 @@ test.describe("visual capture", () => {
     await page.waitForSelector("#blockforge-hud", { timeout: 30_000 });
     await page.waitForTimeout(3000);
 
+    // Dismiss the title screen so the capture shows the GAME, not the menu.
+    const play = page.locator("#blockforge-title .bf-play");
+    if (await play.count()) {
+      await play.click();
+      await page.waitForTimeout(1200);
+    }
+
     await page.screenshot({ path: "test-results/capture-game.png" });
     process.stdout.write("  wrote test-results/capture-game.png\n");
 

@@ -17,7 +17,7 @@ import {
   stepPhysics,
   type SolidWorld,
 } from "./core/physics.js";
-import { Hud, SoundBoard, WorldRenderer, chunkKeyOf } from "./render/index.js";
+import { Hud, SoundBoard, TitleScreen, WorldRenderer, chunkKeyOf } from "./render/index.js";
 
 /**
  * The shape the render layer needs from the engine.
@@ -44,6 +44,8 @@ export interface EngineBridge {
   updateView?(playerX: number, playerZ: number, renderer: WorldRenderer): void;
 }
 
+/** How many hotbar slots the HUD shows. */
+const HOTBAR_SLOTS = 9;
 const EYE_HEIGHT = 1.62;
 const WALK_SPEED = 4.5;
 const JUMP_SPEED = 8.0;
@@ -54,6 +56,7 @@ export class Game {
   private readonly renderer: WorldRenderer;
   private readonly hud: Hud;
   private readonly sound: SoundBoard;
+  private readonly title: TitleScreen;
   private readonly engine: EngineBridge;
 
   private position: Vec3 = { x: 0.5, y: 90, z: 0.5 };
@@ -63,6 +66,10 @@ export class Game {
   private onGround = false;
 
   private readonly keys = new Set<string>();
+  private selectedSlot = 0;
+  private health = 20;
+  private hunger = 20;
+  private message: string | null = null;
   private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
   private running = false;
@@ -72,7 +79,18 @@ export class Game {
     this.renderer = new WorldRenderer(canvas);
     this.hud = new Hud();
     this.sound = new SoundBoard();
+    this.title = new TitleScreen();
     this.bindInput(canvas);
+
+    // The title screen's "click to play" is what captures the pointer. The
+    // operator reported that mouse-look felt broken on first use, and the
+    // reason was that the game dropped the player in with the mouse NOT
+    // captured and nothing told them to click. Now the first click is the
+    // play button, so the first thing the player does visibly works.
+    this.title.root.addEventListener("click", () => {
+      this.sound.unlock();
+      void canvas.requestPointerLock?.();
+    });
   }
 
   /** The player's current state, in the frozen PlayerState shape. */
@@ -95,6 +113,7 @@ export class Game {
     }
     this.running = true;
     this.syncChunks();
+    this.title.setReady("world ready");
     const loop = (): void => {
       if (!this.running) {
         return;
@@ -115,7 +134,9 @@ export class Game {
   step(): void {
     const dt = 1 / 60;
 
-    if (!this.hud.menuOpen) {
+    // No movement or looking until the player has pressed play. The game
+    // still renders, so the title screen has a live world behind it.
+    if (this.title.hasStarted && !this.hud.menuOpen) {
       this.applyLook();
       this.applyMove(dt);
     }
@@ -264,11 +285,15 @@ export class Game {
     this.hud.update({
       targetedBlock: hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null,
       targetedPosition: hit,
-      hotbar: [],
-      selectedSlot: 0,
-      health: 20,
-      hunger: 20,
-      message: null,
+      // Nine slots, always. The ITEMS are M3 (GAMEPLAY) content and are empty
+      // for now, but the hotbar SHELL is M1: the operator reported "no
+      // inventory bar", and a bar made of nothing is not a bar. Empty slots
+      // still read as slots.
+      hotbar: Array.from({ length: HOTBAR_SLOTS }, () => ({ id: "", count: 0 })),
+      selectedSlot: this.selectedSlot,
+      health: this.health,
+      hunger: this.hunger,
+      message: this.message,
     });
   }
 
@@ -303,6 +328,11 @@ export class Game {
       }
       if (event.code === "KeyR") {
         this.act(true);
+        return;
+      }
+      // Number keys select a hotbar slot.
+      if (/^Digit[1-9]$/.test(event.code)) {
+        this.selectedSlot = Number(event.code.slice(-1)) - 1;
         return;
       }
       this.keys.add(event.code);

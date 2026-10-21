@@ -15,3 +15,4 @@ export { buildAtlasCanvas, getAtlasTexture, faceUv, tileIndex, atlasSize, TILE_P
 export { installConsoleGuard, HEADLESS_CHROMIUM_ARGS } from "./consoleGuard.js";
 export { buildSky, buildSkyCanvas } from "./sky.js";
 export { VIEW_RADIUS_CHUNKS, VIEW_RADIUS_BLOCKS, FOG_NEAR, FOG_FAR } from "./viewDistance.js";
+export { TitleScreen } from "./titleScreen.js";
