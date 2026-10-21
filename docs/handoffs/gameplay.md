@@ -169,3 +169,113 @@ false` to emit the JS. The two conflict. The fix belongs to whoever owns
 `scripts/tsconfig.build.json`; it is not in my area, so I did not touch it.
 The self-check still runs because `tsc` emits the JS before it reports the
 error, so `node .../craftingCheck.js` works and passes 51 assertions.
+
+---
+
+## T80 — broken blocks become collectable items, and the pack is real
+
+Commit `214d4da` on `feature/gameplay/m1`. The operator reported "not able to
+collect broken blocks no inventory" — two halves, both now in the tree.
+
+### What landed
+
+- `src/gameplay/inventory.ts` — the pack rules: nine hotbar slots, stacking
+  up to `MAX_STACK`, removal, counting, selection. Tools never stack (each
+  worn tool is a distinct item). An empty slot is an empty `ItemStack`, because
+  the frozen `Inventory` has no null variant.
+- `src/gameplay/itemEntities.ts` — the dropped item: spawn, settle, lifetime,
+  pickup delay, reach, collection.
+- `src/gameplay/drops.ts` — the drop table: a block leaves an item with the
+  block's own name, and the wrong-tool rule is applied HERE, not trusted from
+  the caller.
+- `src/gameplay/session.ts` — `GameplaySession`, the one object the game loop
+  talks to. Holds the inventory, the items on the ground and the tick.
+- `src/gameplay/index.ts` — the barrel. `src/core/index.ts` does NOT re-export
+  it, so the layering rule (`src/core/` must not depend on `src/gameplay/`)
+  holds.
+- `src/main.ts` — the wiring: the break handler spawns the drops, the loop
+  collects them, the hotbar shows the real pack, and placing a block takes one
+  out of the pack.
+- `scripts/selfcheck/dropsCheck.ts` — 72 assertions, wired into
+  `npm run gate:selfcheck`.
+- `e2e/drops.spec.ts` — the browser guard (see below).
+
+### The API the next agent needs
+
+All from `src/gameplay/index.ts`:
+
+```ts
+GameplaySession.droppedItems(): readonly DroppedItemView[]   // {id, x, y, z, block}
+GameplaySession.carried: Inventory
+GameplaySession.held(): ItemStack | null
+GameplaySession.select(index: number): void
+GameplaySession.breakBlock(block, tool, x, y, z, world): void
+GameplaySession.update(dt: number, feet: Vec3): void
+GameplaySession.consumeHeld(): boolean
+GameplaySession.give(stack: ItemStack): AddResult
+```
+
+`x`/`y`/`z` on a `DroppedItemView` are the item's CENTRE in world space and are
+already settled on the ground. The item's position is a pure function of the
+tick, so it does not drift between frames — draw it where the session says it
+is.
+
+### The two rules that bit, and how they are handled
+
+1. **DETERMINISM.** The item records where it was born and where it comes to
+   rest, and derives its position from the tick. The same break at the same
+   tick always leaves the item in the same place, whatever order the world was
+   updated in. No `Math.random`, no wall clock, no `Date.now`. If a drop ever
+   needs randomness it comes from the seeded PRNG.
+2. **THE WRONG-TOOL RULE.** `dropFor()` calls the contract's `canBreak()`
+   itself, so a block that needs a tool and was not broken with one drops
+   NOTHING, and a block broken with the wrong KIND of tool drops nothing
+   either. The player therefore starts with one of every kind of timber tool
+   (mattock, trowel, billhook, maul) — the contract's rule is by KIND, and
+   clay needs a trowel, so a mattock alone would leave the ground under the
+   player's own feet unmineable.
+
+### Verified, not assumed
+
+- `npm run typecheck` exit 0.
+- `npm run lint` exit 0 — 0 errors, the 7 warnings are pre-existing in
+  `verify.mjs`.
+- `npx vitest run` exit 0 — 224 tests passing in 16 files.
+- `npm run build` exit 0.
+- `scripts/selfcheck/dropsCheck.ts` — 72 assertions, all passing, exit 0.
+- `e2e/drops.spec.ts` — 2 passed in Chromium. It drives the REAL game: it looks
+  at the ground, picks the tool the contract says the block needs using the
+  number keys, holds the break button until the block gives way, checks that
+  an item is now lying on the ground, then walks over it and checks that the
+  pack gained exactly one and that the hotbar shows it. A second case checks
+  that a block broken with the WRONG tool leaves the pack untouched.
+
+The browser test found two things the unit assertions could not: the player
+SPAWNS IN THE AIR and must land before the ground can be aimed at, and the
+headless browser draws far fewer frames than a real one, so a fixed sleep is
+not long enough for a timed break. The test polls for the break instead.
+
+### The split, honestly
+
+The board says ENGINE owns the item entities and RENDER/UI owns how they look.
+
+- The item entities are pure and live in `src/gameplay/` here. They import
+  nothing from `src/engine` and touch no engine file. They are gameplay state
+  that the inventory rules read, and the engine has no gameplay to hang them
+  off. If the architect wants them in `src/engine/`, that is a move, not a
+  rewrite — the module has no dependencies at all.
+- **The VISUAL is RENDER/UI's and is not done.** A broken block currently
+  leaves an INVISIBLE item on the ground: the player walks over it, the hotbar
+  count goes up, and nothing is ever drawn. That is the remaining half of the
+  operator's complaint, and it is filed as **T96** with the exact API.
+  `src/render/` was not touched.
+
+### One pre-existing failure, not mine
+
+`npm run gate:selfcheck` (and `gate:bench`, `gate:determinism`) fail at the
+`tsc` step with `TS5096` on `scripts/tsconfig.build.json`. Reproduced with my
+changes stashed, so it is on the branch already — it is T86, and the fix is
+the engine's file. The four self-check scripts all PASS when the compiler is
+given the one-flag override that T86's note already verified
+(`npx tsc -p scripts/tsconfig.build.json --allowImportingTsExtensions false`):
+engine 20/20, mesh 8/8, crafting 51/51, drops 72/72.
