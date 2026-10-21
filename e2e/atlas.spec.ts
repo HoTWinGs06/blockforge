@@ -62,7 +62,7 @@ test.describe("T61: the procedural atlas", () => {
       result.distinct,
       "every sampled block kind must have a DIFFERENT colour in the atlas",
     ).toBe(result.kindCount);
-    process.stdout.write(`  atlas colours: ${result.colours.join("  ")}\n`);
+    process.stdout.write(`  atlas colours: ${(result.colours ?? []).join("  ")}\n`);
   });
 
   test("each block kind maps to a DISTINCT atlas region", async ({ page }: { page: Page }) => {

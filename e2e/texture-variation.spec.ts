@@ -80,7 +80,7 @@ test.describe("T61 guard: the world must not be one flat texture", () => {
           const px = Math.min(canvas.width - 1, Math.max(0, Math.floor(u * canvas.width)));
           const py = Math.min(canvas.height - 1, Math.max(0, Math.floor((1 - v) * canvas.height)));
           const d = ctx.getImageData(px, py, 1, 1).data;
-          colours.add(`${d[0] >> 4},${d[1] >> 4},${d[2] >> 4}`);
+          colours.add(`${(d[0] ?? 0) >> 4},${(d[1] ?? 0) >> 4},${(d[2] ?? 0) >> 4}`);
         }
       }
 
