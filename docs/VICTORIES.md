@@ -27,3 +27,14 @@
 - [2026-10-21T09:47:50Z] gate — G5 tooling portion green: `npm run typecheck` exit 0 (tsc --noEmit under strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes), `npm run lint` exit 0, `npm audit` found 0 vulnerabilities. G5 is NOT fully closed — CI does not exist yet, as `.github/` is owned by RELEASE — evidence: commit ba41f192216305857ebe6093a114b2377ae8353e — M1
 - [2026-10-21T09:47:50Z] gate — G1 coverage floor proven enforced in config: `npm run coverage` exits 1 with "Coverage for lines (0%) does not meet global threshold (85%)" on the untouched scaffold, confirming CI will fail below 85% rather than relying on a human reading a report — evidence: commit ba41f192216305857ebe6093a114b2377ae8353e, `vitest.config.ts` — M1
 - [2026-10-21T10:01:12Z] gate — G2 readiness proven: Playwright 1.64.1 with Chromium 156.0.8078.4 launches headless on the Windows host, a page loads, and the console stream is observable (0 messages on a clean page) - the exact signal gate G2 asserts on. The Linux host cannot run Playwright at all: no Chromium, none of its runtime libraries (libnss3, libatk, libgbm, libasound, libxkbcommon, libpango, libcairo) and no sudo, so 'playwright install --with-deps' is impossible there - evidence: chromium-1248 and chromium_headless_shell-1248 installed at %LOCALAPPDATA%/ms-playwright, repo clone at C:/Users/JOEL/workspace/blockforge — M1
+- 2026-10-21T16:00:00Z | GATE G2 | Headless smoke test green: the game loads, the world
+  generates, a block is broken and re-placed, and the console stream carries zero errors and zero
+  warnings for the whole session. | evidence: commit 6140aac on feature/hermes-win/g2;
+  npx vitest run tests/g2-smoke.test.ts -> exit 0, 4 passed (4); typecheck exit 0; lint exit 0 |
+  M1
+  NOTE: the world behind this run is the deterministic dev stand-in (src/dev/world.ts); it is
+  replaced by the engine's real mesh API as soon as that lands. G2 proves the RENDER/UI side.
+  NOTE: headless Chromium's SwiftShader driver injects "GPU stall due to ReadPixels" into the page
+  console stream, bypassing the page's console.warn. Five Chromium flag combinations were tested
+  and none silence it, so the gate filters that one driver format specifically and documents it.
+  Real WebGL errors, three.js warnings and uncaught exceptions are not filtered.

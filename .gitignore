@@ -12,3 +12,6 @@ blob-report/
 !.env.example
 .DS_Store
 Thumbs.db
+
+# scratch output from determinism harnesses (not source)
+src/core/bf-det-*/
