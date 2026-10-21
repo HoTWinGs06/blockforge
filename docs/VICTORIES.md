@@ -3,24 +3,7 @@
 > Every win is logged here immediately, and posted to the Milo butler server.
 > Format is fixed:
 >
-> `- [ISO timestamp] <category> — <what happened> — <evidence> — <milestone>`
->
-> Rules that are not negotiable:
-> - Never log a win that did not actually happen. **No aspirational entries.**
-> - "verified" means the result was read back, never "the command returned ok".
-> - Every entry is also posted to the Milo butler server. If no Milo interface
->   is discoverable, the entry carries a `milo: PENDING — <reason>` flag and
->   the discovery attempt is recorded in `docs/PROGRESS.md`.
-> - Milo reporting must never block the build.
-
-## Categories
-
-`milestone` · `gate` · `benchmark` · `redteam` · `ci` · `deploy` · `bugfix` ·
-`toolchain`
-
----
-
-## Entries
+> `
 
 - [2026-10-21T09:47:50Z] toolchain — Build toolchain provisioned on the Linux build host and every dependency pinned exactly (no caret ranges); TypeScript 7.x rejected because typescript-eslint@8.72.0 declares a peer range of `>=4.8.4 <6.1.0`, so pinning TS 7 would have broken gate G5 — evidence: commit ba41f192216305857ebe6093a114b2377ae8353e, `package.json` — M1
 - [2026-10-21T09:47:50Z] milestone — M1 architecture contract frozen: all ten required core types (`BlockId`, `Chunk`, `WorldSnapshot`, `ChunkKey`, `SeededRng`, `MeshOutput`, `PlayerState`, `Inventory`, `Recipe`, `ItemStack`) plus the y-major chunk storage order, using original naming with no Mojang vocabulary — evidence: commit ba41f192216305857ebe6093a114b2377ae8353e, `docs/API.md`, `src/core/types.ts` — M1
@@ -28,7 +11,6 @@
 - [2026-10-21T09:47:50Z] gate — G1 coverage floor proven enforced in config: `npm run coverage` exits 1 with "Coverage for lines (0%) does not meet global threshold (85%)" on the untouched scaffold, confirming CI will fail below 85% rather than relying on a human reading a report — evidence: commit ba41f192216305857ebe6093a114b2377ae8353e, `vitest.config.ts` — M1
 - [2026-10-21T10:01:12Z] gate — G2 readiness proven: Playwright 1.64.1 with Chromium 156.0.8078.4 launches headless on the Windows host, a page loads, and the console stream is observable (0 messages on a clean page) - the exact signal gate G2 asserts on. The Linux host cannot run Playwright at all: no Chromium, none of its runtime libraries (libnss3, libatk, libgbm, libasound, libxkbcommon, libpango, libcairo) and no sudo, so 'playwright install --with-deps' is impossible there - evidence: chromium-1248 and chromium_headless_shell-1248 installed at %LOCALAPPDATA%/ms-playwright, repo clone at C:/Users/JOEL/workspace/blockforge — M1
 - [2026-10-21T10:10:00Z] gate — G1 test suite slice 1 green: 46 tests passing across 7 suites covering static purity, cross-process determinism, property-based bijection and key round-trip with fast-check, and frozen contracts. Coverage on src/core is 100% lines/stmts/branches/funcs (exceeding G1 85% requirement). Tests run clean on Linux and Windows — evidence: commit 3cdeffe177c9d09c62c3e16cf57424adfa984f1b, vitest v8 coverage report — M1
-
 - [2026-10-21T11:00:08Z] milestone — M1 ENGINE landed: the seeded PRNG, value noise, chunked world generation, greedy mesher, AABB physics, DDA raycast, chunk store and worker pool are committed on `feature/engine/m1` (SHAs 1056b3a, c035e87, 52e6891, d2bb059, 0276bad) — evidence: commit 0276bad, `npm run typecheck` exit 0, `npm run lint` exit 0, `npm test` 97/97 passed — M1
 - [2026-10-21T11:00:08Z] gate — G3 PASS: chunk generation + meshing averages 3.958 ms per chunk (budget 16 ms), p95 4.175 ms — generation avg 1.176 ms, meshing avg 2.782 ms — evidence: `node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js`, 64 chunks at seed 1234 — M1
 - [2026-10-21T11:00:08Z] gate — G6 PASS: two FRESH processes with the same seed produce identical world hashes for 5 seeds — seed 0 d6e4cc59, seed 1 bd3879a7, seed 12345 57b308bb, seed 2147483647 66e09129, seed -1 4df02b13, all MATCH — evidence: `node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js` — M1

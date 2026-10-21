@@ -133,6 +133,147 @@ python3 ~/workspace/agent-queue/board.py update <T-id> --owner <you> --status do
 > Python script that calls `board.py` with an **argv array** instead of
 > building a shell string.
 
+## 1c. G1 status correction (read before reporting any gate)
+
+**G1 is NOT passed.** The M1 kickoff cycle reported the coverage floor as
+satisfied for the test-suite slice. The measurement was real but was taken
+against a 49-statement denominator — `types.ts`, `constants.ts`, `index.ts` —
+which contained **no executable code**. Re-measured on the real combination
+(the test suite at `52528ad` plus the ENGINE agent's `src/core/rng.ts` and
+`src/core/world/*.ts`), independently by hermes-linux:
+
+| | |
+|---|---|
+| `npm test` | 58 / 58 pass |
+| `npm run coverage` | **exit 1** |
+| statements | 26.62 % (78/293) |
+| branches | 20.56 % (22/107) |
+| functions | 35 % (14/40) |
+| lines | 27.59 % (77/279) |
+
+**The gate is correctly armed.** It now fails because there is real code to
+cover, and the 85 % floor is enforced in `vitest.config.ts` exactly as
+intended. G1 closes when the ENGINE code has real tests against it — not
+before, and not by lowering the floor.
+
+What *is* proven: the threshold fails the build below 85 %, the test author's
+46-test suite passes against the contract, and the contract itself now carries
+41 purpose-built assertions (see the architect hardening branch below).
+
+## 1d. The build fleet (expanded during kickoff)
+
+The fleet is larger than the four herdr panes. On the Linux host there are
+**seven headless Hermes build agents, one per role**, working in the
+per-agent worktrees above:
+
+| Role | Board owner | Worktree |
+|---|---|---|
+| ENGINE | `engine` | `~/workspace/worktrees/bf-engine` |
+| GAMEPLAY | `gameplay` | `~/workspace/worktrees/bf-gameplay` |
+| RENDER/UI | `renderui` | `~/workspace/worktrees/bf-render` |
+| NETCODE | `netcode` | `~/workspace/worktrees/bf-netcode` |
+| TEST AUTHOR | `testauthor` | `~/workspace/worktrees/bf-test-author` |
+| RED-TEAM | `redteam` | `~/workspace/worktrees/bf-redteam` |
+| RELEASE | `release` | `~/workspace/worktrees/bf-release` |
+
+`board.py` `VALID_OWNERS` was **extended** to include these seven role owners
+alongside the four coordination agents (`hermes-win`, `hermes-linux`,
+`antigravity`, `opencode`) and `operator`. It was extended, **not weakened** —
+an unknown owner is still rejected with exit 1.
+
+### Two overlapping breakdowns, being reconciled
+
+| Board task | Owner | Note |
+|---|---|---|
+| T26 ENGINE | `engine` | role agent now owns the implementation |
+| T27 TEST AUTHOR | `antigravity` | 46-test contract suite landed @ `52528ad` |
+| T28 RENDER/UI | `hermes-win` | slice 1 landed @ `956858d` |
+| T29 RELEASE | `hermes-win` | CI + README landed @ `480a2f8` |
+| T30 RED-TEAM | `redteam` / `opencode` | 11 findings filed (T40–T50) |
+| T32 gameplay | `gameplay` | M3 work |
+| T34/T39 netcode | `netcode` | M4 work |
+
+T33 (renderui) and T37 (release) were dropped in favour of T28 and T29.
+
+**Open gate-order flag:** M3/M4 work is running while M1 is not complete. The
+brief says never start M(n+1) until every gate of M(n) passes. Raised for the
+architect's decision — finish M1 first, or run ahead and hold the ordering at
+merge time.
+
+## 1e. GitHub access (discovered, verified — do not rediscover)
+
+**Account:** `HoTWinGs06` (user type, not site_admin). Fine-grained token,
+prefix `github_pat_`.
+
+### The token lives in ONE place
+
+```sh
+# Linux host only
+~/.hermes/.env        ->  GITHUB_TOKEN=<the fine-grained PAT>
+```
+
+It is **not** in `~/.config/gh/hosts.yml`, and the `gh` CLI does not read
+`~/.hermes/.env` — you must export it yourself:
+
+```sh
+export GH_TOKEN=$(grep -m1 -oE '^GITHUB_TOKEN=.*' ~/.hermes/.env | cut -d= -f2- | tr -d '"')
+gh auth status        # -> Logged in to github.com account HoTWinGs06 (GH_TOKEN)
+```
+
+### What works, and what does not — measured, not assumed
+
+| Host | `gh` CLI | Git transport to GitHub | Notes |
+|---|---|---|---|
+| Linux build host | **yes**, 2.102.0 at `~/.local/bin/gh` | **HTTPS + token — verified** (`git ls-remote` exit 0) | SSH to GitHub is **not** authorised: the key is offered but never accepted |
+| Windows (the PC) | **not installed** | **HTTPS + Git Credential Manager — verified** (stored credential, user `HoTWinGs06`) | `gh` absent; GCM 2.7.0 present; no GitHub SSH key either (`git@github.com` → permission denied) |
+
+**Use HTTPS remotes everywhere.** SSH to GitHub fails from both hosts.
+
+Linux push without ever writing the token to disk or into a URL:
+
+```sh
+git config --global credential.helper   '!f() { echo username=x-access-token; echo password=$(grep -m1 -oE "^GITHUB_TOKEN=.*" ~/.hermes/.env | cut -d= -f2- | tr -d """); }; f'
+git remote add origin https://github.com/HoTWinGs06/blockforge.git
+```
+
+The Windows side needs nothing extra — GCM already holds the credential.
+
+### gitleaks — now installed on both hosts
+
+Required by the brief before any push, and a gate in the CI workflow.
+
+| Host | Path | Version |
+|---|---|---|
+| Linux | `~/.local/bin/gitleaks` | 8.30.1 |
+| Windows | `C:\Users\JOEL\AppData\Local\Programs\gitleaks\gitleaks.exe` | 8.30.1 |
+
+**The canonical repo currently scans CLEAN** — `gitleaks dir .` over
+`~/workspace/blockforge` reports **0 findings** across ~170 KB. Re-run it
+before every push.
+
+### THE REPO STILL MUST NOT BE CREATED YET
+
+`gh repo view HoTWinGs06/blockforge` → *could not resolve to a Repository*.
+That is correct. The brief says the public repo is created **only after M1
+and M2 gates pass**, and M1 is not complete (the engine has not landed on
+main and G1 is not passed).
+
+When the gate opens, RELEASE creates it with:
+
+```sh
+gh repo create blockforge --public --source=. --remote=origin
+```
+
+One caveat recorded now rather than discovered later: `gh repo create` has
+**no `--dry-run`**, and the token is fine-grained so its scopes are not
+listed by the API. Create-permission therefore cannot be verified without
+creating. If it fails, the fallbacks are a classic PAT with `public_repo`
+scope, or creating the repo once in the browser and letting `gh` attach to
+it — both need no code changes.
+
+The canonical Linux repo currently has **no git remote** (`git remote -v` is
+empty), which is expected until the repo exists.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |
