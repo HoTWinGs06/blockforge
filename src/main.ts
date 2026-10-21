@@ -184,8 +184,14 @@ export class Game {
       if (dy < 0) {
         this.onGround = true;
       }
-      this.velocity.y = 0;
+      // Only the axis that actually collided may have its velocity zeroed.
+      // Zeroing the vertical velocity on a HORIZONTAL collision cancelled
+      // the jump the moment the player touched a wall: the jump set
+      // velocity.y, the horizontal move then hit the wall and cleared it
+      // in the same frame, so the player rose by one frame's worth and
+      // stopped. That is why the jump only worked in open ground.
       if (dy !== 0) {
+        this.velocity.y = 0;
         return;
       }
       if (dx !== 0) {
