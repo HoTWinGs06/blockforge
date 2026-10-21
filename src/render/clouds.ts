@@ -31,6 +31,14 @@ const CELL = 32;
 const CELL_RADIUS = 1;
 
 /** The world altitude the cloud deck sits at, in blocks. */
+/**
+ * The altitude band the clouds drift in.
+ *
+ * The player stands at about y=68, so the deck is 20 to 32 blocks above their
+ * head. It is deliberately ABOVE the world's fog far plane (60): the cloud
+ * material has fog DISABLED and does its own distance fade, so the deck is
+ * not swallowed by the scene fog. See the material in populate().
+ */
 const ALTITUDE_MIN = 88;
 const ALTITUDE_MAX = 100;
 
@@ -125,6 +133,7 @@ export class CloudLayer {
     // very first frame. The first advance() moves it if the player is
     // somewhere else.
     this.populate(0, 0);
+
   }
 
   /**
@@ -153,7 +162,21 @@ export class CloudLayer {
             map: this.texture,
             transparent: true,
             depthWrite: false,
-            fog: true,
+            depthTest: false,
+            // THE SCENE FOG MUST NOT TOUCH THE CLOUDS.
+            //
+            // The world's fog runs from FOG_NEAR (28) to FOG_FAR (60), and a
+            // cloud deck at 88 to 100 is well beyond the far plane. With fog
+            // enabled, the scene fog blends the cloud's colour all the way to
+            // the sky colour, so the clouds render as nothing at all - a
+            // perfectly clear sky, and a feature that looked broken.
+            //
+            // The deck does its OWN distance fade in advance(), which sets
+            // the opacity on the same curve the fog uses. So a cloud reaches
+            // zero opacity exactly at the fog distance and vanishes into the
+            // sky cleanly, rather than being a flat decal of fog colour
+            // sitting on the sky.
+            fog: false,
             opacity: CLOUD_OPACITY,
           });
           const sprite = new THREE.Sprite(material);
@@ -217,13 +240,19 @@ export class CloudLayer {
       const z = cloud.anchor.z + Math.sin(phase) * cloud.amplitude;
       cloud.sprite.position.set(x, y, z);
 
-      // The scene fog blends a cloud's colour towards the fog colour. The
-      // sky dome is deliberately NOT fogged, so a cloud that faded all the
-      // way to the fog colour would sit on the sky as a flat decal. The
-      // opacity follows the same curve, so a cloud reaches nothing at
-      // exactly the fog distance instead of a coloured patch.
-      const distance = Math.hypot(x - observer.x, y - observer.y, z - observer.z);
-      const fog = (distance - FOG_NEAR) / (FOG_FAR - FOG_NEAR);
+      // The cloud's own distance fade.
+      //
+      // The HORIZONTAL distance, not the 3D one. The deck is 20 to 32 blocks
+      // above the player's head, so the 3D distance is always at least 20 -
+      // and using it meant every cloud started already half faded, and the
+      // ones overhead were past the far plane and fully invisible. That is
+      // why the sky had no clouds in it: the fade was killing them.
+      //
+      // The horizontal distance is what the player actually judges distance
+      // by when they look at the sky, and it is what the world's fog is
+      // tuned for.
+      const horizontal = Math.hypot(x - observer.x, z - observer.z);
+      const fog = (horizontal - FOG_NEAR) / (FOG_FAR - FOG_NEAR);
       cloud.material.opacity = CLOUD_OPACITY * (1 - Math.min(1, Math.max(0, fog)));
     }
   }

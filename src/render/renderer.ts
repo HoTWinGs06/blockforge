@@ -16,6 +16,8 @@ import { blockFromOrdinal } from "../core/world.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
 import { buildSky } from "./sky.js";
+import { CloudLayer } from "./clouds.js";
+import { WORLD_SEED } from "./engineBridge.js";
 import { Viewmodel } from "./viewmodel.js";
 import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
 /** How far the player can reach when breaking or placing a block. */
@@ -142,6 +144,21 @@ export class WorldRenderer {
   private readonly viewmodel = new Viewmodel();
 
   /**
+   * The cloud deck.
+   *
+   * It lives here rather than inside buildSky() because it has to be
+   * ADVANCED every frame: the deck's sprites are positioned by advance(),
+   * not by the constructor. A deck that is built and never advanced leaves
+   * every sprite at the origin - inside the ground, invisible - which is
+   * exactly what happened: the feature was written, the tests passed, and
+   * the sky had no clouds in it.
+   */
+  private readonly clouds: CloudLayer;
+
+  /** The frame counter the cloud deck drifts on. */
+  private cloudTick = 0;
+
+  /**
    * A second scene that holds ONLY the viewmodel.
    *
    * The hand is parented to the camera, and the camera lives in this scene
@@ -213,6 +230,12 @@ export class WorldRenderer {
     // bright spot in the sky and the lit side of the blocks agree.
     this.scene.add(buildSky(sunDirection));
 
+    // The cloud deck is added to the SCENE, not to the sky group, because
+    // the renderer has to advance it every frame - the sky group is built
+    // once and never touched again.
+    this.clouds = new CloudLayer(WORLD_SEED);
+    this.scene.add(this.clouds.group);
+
     this.scene.add(this.chunkGroup);
 
     const box = new THREE.BoxGeometry(1.002, 1.002, 1.002);
@@ -267,6 +290,11 @@ export class WorldRenderer {
     this.camera.rotation.order = "YXZ";
     this.camera.rotation.y = state.yaw;
     this.camera.rotation.x = state.pitch;
+
+    // Advance the cloud deck. The sprites are positioned here, so a deck
+    // that is not advanced has every cloud sitting at the origin.
+    this.cloudTick++;
+    this.clouds.advance(this.cloudTick, state.position);
   }
 
   /** Show the wireframe on the block the player is aiming at. */
@@ -371,6 +399,7 @@ export class WorldRenderer {
   }
 
   dispose(): void {
+    this.clouds.dispose();
     for (const chunk of this.meshes.values()) {
       chunk.dispose();
     }
