@@ -1,92 +1,238 @@
+/**
+ * BlockForge — PRIORITY 3: Seeded PRNG specification (src/core/rng.ts).
+ *
+ * OWNERSHIP: TEST AUTHOR (tests/).
+ *
+ * The PRNG is the project's ONLY source of randomness, so every
+ * determinism guarantee downstream rests on it. The properties pinned here:
+ *
+ *   1. the same seed produces the same stream, in any process;
+ *   2. `fork(label)` derives a child stream from (seed, label) ALONE, so
+ *      subsystems never interfere with each other or with generation
+ *      order;
+ *   3. `getState`/`setState` round-trip exactly, so a game can save and
+ *      restore mid-generation;
+ *   4. `nextInt` respects BOTH bounds, and `nextUint32` covers the full
+ *      uint32 range rather than a small slice of it.
+ */
 import { describe, it, expect } from "vitest";
 import * as fc from "fast-check";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { createRng, createRngFromState } from "../src/core/rng.js";
+import type { SeededRng } from "../src/core/types.js";
 
-describe("PRIORITY 3: Seeded PRNG Specification (src/core/rng.ts)", async () => {
-  const rngFile = path.resolve(__dirname, "../src/core/rng.ts");
-  const rngExists = fs.existsSync(rngFile);
+const TWO_POW_32 = 4294967296;
 
-  it("specifies SeededRng requirement for engine and core", () => {
-    if (!rngExists) {
-      expect(true).toBe(true);
-      return;
-    }
-    expect(rngExists).toBe(true);
+describe("PRIORITY 3: Seeded PRNG Specification (src/core/rng.ts)", () => {
+  it("generates deterministic uint32 stream for identical seeds", () => {
+    fc.assert(
+      fc.property(fc.integer(), (seed) => {
+        const rngA = createRng(seed);
+        const rngB = createRng(seed);
+
+        for (let i = 0; i < 100; i++) {
+          expect(rngA.nextUint32()).toBe(rngB.nextUint32());
+        }
+      }),
+    );
   });
 
-  if (rngExists) {
-    const specPath = "../src/core/rng.js";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod: any = await import(/* @vite-ignore */ specPath);
-    const makeRng = mod.createRng || ((seed: number) => new mod.SeededRng(seed));
+  it("generates deterministic float stream in [0, 1) for identical seeds", () => {
+    const rngA = createRng(42);
+    const rngB = createRng(42);
 
-    it("generates deterministic uint32 stream for identical seeds", () => {
-      fc.assert(
-        fc.property(fc.integer(), (seed) => {
-          const rngA = makeRng(seed);
-          const rngB = makeRng(seed);
+    for (let i = 0; i < 100; i++) {
+      const valA = rngA.nextFloat();
+      const valB = rngB.nextFloat();
+      expect(valA).toBe(valB);
+      expect(valA).toBeGreaterThanOrEqual(0);
+      expect(valA).toBeLessThan(1);
+    }
+  });
 
-          for (let i = 0; i < 100; i++) {
-            expect(rngA.nextUint32()).toBe(rngB.nextUint32());
-          }
-        }),
-      );
-    });
+  it("nextInt generates integers within [minInclusive, maxExclusive)", () => {
+    const rng = createRng(12345);
+    for (let i = 0; i < 200; i++) {
+      const val = rng.nextInt(5, 15);
+      expect(Number.isInteger(val)).toBe(true);
+      expect(val).toBeGreaterThanOrEqual(5);
+      expect(val).toBeLessThan(15);
+    }
+  });
 
-    it("generates deterministic float stream in [0, 1) for identical seeds", () => {
-      const rngA = makeRng(42);
-      const rngB = makeRng(42);
+  it("nextInt respects BOTH bounds, including the exclusive upper bound", () => {
+    // The lower bound is inclusive and the upper bound is exclusive, so
+    // the result must never equal the upper bound.
+    const rng = createRng(7);
+    for (let i = 0; i < 500; i++) {
+      const val = rng.nextInt(3, 4);
+      expect(val).toBeGreaterThanOrEqual(3);
+      expect(val).toBeLessThan(4);
+      // With a span of 1 there is exactly one legal answer.
+      expect(val).toBe(3);
+    }
+  });
 
-      for (let i = 0; i < 100; i++) {
-        const valA = rngA.nextFloat();
-        const valB = rngB.nextFloat();
-        expect(valA).toBe(valB);
-        expect(valA).toBeGreaterThanOrEqual(0);
-        expect(valA).toBeLessThan(1);
-      }
-    });
+  it("nextInt with equal bounds returns that bound", () => {
+    expect(createRng(7).nextInt(4, 4)).toBe(4);
+  });
 
-    it("nextInt generates integers within [minInclusive, maxExclusive)", () => {
-      const rng = makeRng(12345);
-      for (let i = 0; i < 200; i++) {
-        const val = rng.nextInt(5, 15);
-        expect(Number.isInteger(val)).toBe(true);
-        expect(val).toBeGreaterThanOrEqual(5);
-        expect(val).toBeLessThan(15);
-      }
-    });
+  it("nextInt rejects non-integer bounds", () => {
+    const rng = createRng(7);
+    expect(() => rng.nextInt(0.5, 3)).toThrow(RangeError);
+    expect(() => rng.nextInt(0, 3.5)).toThrow(RangeError);
+  });
 
-    it("fork(label) produces independent and deterministic child streams", () => {
-      const root1 = makeRng(777);
-      const root2 = makeRng(777);
+  it("nextInt rejects an upper bound below the lower bound", () => {
+    const rng = createRng(7);
+    expect(() => rng.nextInt(5, 3)).toThrow(RangeError);
+  });
 
-      const terrain1 = root1.fork("terrain");
-      const terrain2 = root2.fork("terrain");
-      const biomes1 = root1.fork("biomes");
+  it("nextUint32 stays inside the uint32 range and covers it", () => {
+    const rng = createRng(12345);
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    let sawLowHalf = false;
+    let sawHighHalf = false;
+    for (let i = 0; i < 200000; i++) {
+      const value = rng.nextUint32();
+      expect(Number.isInteger(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThan(TWO_POW_32);
+      if (value < min) min = value;
+      if (value > max) max = value;
+      if (value < TWO_POW_32 / 2) sawLowHalf = true;
+      else sawHighHalf = true;
+    }
+    // The stream must reach both ends of the uint32 range, not just a
+    // narrow band of it.
+    expect(sawLowHalf).toBe(true);
+    expect(sawHighHalf).toBe(true);
+    expect(min).toBeLessThan(TWO_POW_32 / 1000);
+    expect(max).toBeGreaterThan((TWO_POW_32 * 999) / 1000);
+  });
 
-      for (let i = 0; i < 50; i++) {
-        expect(terrain1.nextUint32()).toBe(terrain2.nextUint32());
-      }
+  it("fork(label) produces independent and deterministic child streams", () => {
+    const root1 = createRng(777);
+    const root2 = createRng(777);
 
-      const terrainVal = terrain1.nextUint32();
-      const biomeVal = biomes1.nextUint32();
-      expect(terrainVal).not.toBe(biomeVal);
-    });
+    const terrain1 = root1.fork("terrain");
+    const terrain2 = root2.fork("terrain");
+    const biomes1 = root1.fork("biomes");
 
-    it("getState() and setState() allow exact checkpoint and restore", () => {
-      const rng = makeRng(999);
-      for (let i = 0; i < 25; i++) {
-        rng.nextUint32();
-      }
+    for (let i = 0; i < 50; i++) {
+      expect(terrain1.nextUint32()).toBe(terrain2.nextUint32());
+    }
 
-      const checkpoint = rng.getState();
-      const nextThree1 = [rng.nextUint32(), rng.nextUint32(), rng.nextUint32()];
+    const terrainVal = terrain1.nextUint32();
+    const biomeVal = biomes1.nextUint32();
+    expect(terrainVal).not.toBe(biomeVal);
+  });
 
-      rng.setState(checkpoint);
-      const nextThree2 = [rng.nextUint32(), rng.nextUint32(), rng.nextUint32()];
+  it("forking the same label twice from one parent gives the same stream", () => {
+    // fork() does not advance the parent, so two forks of the same label
+    // from the same parent are the same stream. This is a regression
+    // guard: it holds whether or not fork() is order-dependent.
+    const parent = createRng(42);
+    const first = parent.fork("terrain");
+    const second = parent.fork("terrain");
+    for (let i = 0; i < 20; i++) {
+      expect(first.nextUint32()).toBe(second.nextUint32());
+    }
+  });
 
-      expect(nextThree1).toEqual(nextThree2);
-    });
-  }
+  it("different labels give different child streams", () => {
+    const parent = createRng(42);
+    const a = parent.fork("terrain");
+    const b = parent.fork("biomes");
+    const valuesA: number[] = [];
+    const valuesB: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      valuesA.push(a.nextUint32());
+      valuesB.push(b.nextUint32());
+    }
+    expect(valuesA).not.toEqual(valuesB);
+  });
+
+  // RED-TEAM finding E2 (board T45). The engine was told it had fixed
+  // this and the board records the fix as landed. It was not: fork()
+  // derives the child seed from `this.state` — the parent's CURRENT state
+  // — rather than from the parent's seed. So the same label forked at a
+  // different point in the parent's life gives a different child stream,
+  // and terrain changes depending on the order subsystems happen to draw
+  // in. That is exactly the order-dependence the determinism invariant
+  // forbids.
+  //
+  // The inner assertion is the FIXED behaviour, so the moment the engine
+  // fixes it this test flips RED and announces that the finding is
+  // closed. TEST AUTHOR owns the conversion to a plain `it` at that point.
+  it.fails("E2: fork must depend only on (seed, label), not on the parent's history", () => {
+    const early = createRng(42).fork("terrain");
+    const lateParent = createRng(42);
+    lateParent.nextUint32();
+    const late = lateParent.fork("terrain");
+    for (let i = 0; i < 20; i++) {
+      expect(early.nextUint32()).toBe(late.nextUint32());
+    }
+  });
+
+  it("control: two fresh parents with the same seed fork the same label to the same stream", () => {
+    // True both before and after the E2 fix, so this control never needs
+    // converting: it proves the probe is live without pinning the bug.
+    const a = createRng(42).fork("terrain");
+    const b = createRng(42).fork("terrain");
+    for (let i = 0; i < 20; i++) {
+      expect(a.nextUint32()).toBe(b.nextUint32());
+    }
+  });
+
+  it("getState() and setState() allow exact checkpoint and restore", () => {
+    const rng = createRng(999);
+    for (let i = 0; i < 25; i++) {
+      rng.nextUint32();
+    }
+
+    const checkpoint = rng.getState();
+    const nextThree1 = [rng.nextUint32(), rng.nextUint32(), rng.nextUint32()];
+
+    rng.setState(checkpoint);
+    const nextThree2 = [rng.nextUint32(), rng.nextUint32(), rng.nextUint32()];
+
+    expect(nextThree1).toEqual(nextThree2);
+  });
+
+  it("getState() reports the seed and the current state", () => {
+    const rng = createRng(1234);
+    const state = rng.getState();
+    expect(state.seed).toBe(1234);
+    expect(state.state).toBe(1234);
+    // Drawing advances the state but not the seed.
+    rng.nextUint32();
+    const after = rng.getState();
+    expect(after.seed).toBe(1234);
+    expect(after.state).not.toBe(1234);
+  });
+
+  it("createRngFromState() restores a stream exactly", () => {
+    const rng = createRng(4321);
+    for (let i = 0; i < 10; i++) {
+      rng.nextUint32();
+    }
+    const state = rng.getState();
+    const expected = [rng.nextUint32(), rng.nextUint32(), rng.nextUint32()];
+
+    const restored: SeededRng = createRngFromState(state);
+    expect([restored.nextUint32(), restored.nextUint32(), restored.nextUint32()]).toEqual(expected);
+  });
+
+  it("setState() restores a state captured from a different instance", () => {
+    const source = createRng(555);
+    for (let i = 0; i < 7; i++) {
+      source.nextUint32();
+    }
+    const state = source.getState();
+
+    const target = createRng(1);
+    target.setState(state);
+    expect(target.nextUint32()).toBe(source.nextUint32());
+  });
 });
