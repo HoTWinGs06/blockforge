@@ -26,6 +26,16 @@ export interface HudState {
   readonly health: number;
   readonly hunger: number;
   readonly message: string | null;
+  /**
+   * How far through breaking the targeted block the player is, from 0 to 1.
+   *
+   * Null when nothing is being broken. The break TIMES are frozen in the core
+   * contract (BREAK_TIME_SECONDS / breakSeconds) - this is only the progress
+   * readout for them.
+   */
+  readonly breakProgress: number | null;
+  /** The block kind currently being broken, for the label. */
+  readonly breakingBlock: BlockId | null;
 }
 
 const BLOCK_LABELS: Readonly<Record<string, string>> = {
@@ -156,6 +166,25 @@ const CSS = `
   font-size: 12px; opacity: .8; white-space: nowrap;
 }
 
+/* Break progress: a bar under the targeted-block readout. */
+#blockforge-hud .bf-break {
+  position: absolute; left: 50%; top: calc(50% + 54px);
+  transform: translateX(-50%);
+  width: 190px; height: 8px;
+  border: 1px solid rgba(0,0,0,.7); background: rgba(0,0,0,.55);
+  display: none;
+}
+#blockforge-hud .bf-break.bf-active { display: block; }
+#blockforge-hud .bf-break > i {
+  display: block; height: 100%; background: linear-gradient(#e8d79a, #c9a94e);
+}
+#blockforge-hud .bf-break-label {
+  position: absolute; left: 50%; top: calc(50% + 66px);
+  transform: translateX(-50%); font-size: 11px; opacity: .85;
+  white-space: nowrap; display: none;
+}
+#blockforge-hud .bf-break-label.bf-active { display: block; }
+
 #blockforge-hud .bf-message {
   position: absolute; left: 50%; top: 22px; transform: translateX(-50%);
   font-size: 14px; background: rgba(0,0,0,.6); padding: 6px 14px;
@@ -188,6 +217,9 @@ export class Hud {
   private readonly target: HTMLDivElement;
   private readonly hotbar: HTMLDivElement;
   private readonly hotbarLabel: HTMLDivElement;
+  private readonly breakBar: HTMLDivElement;
+  private readonly breakFill: HTMLElement;
+  private readonly breakLabel: HTMLDivElement;
   private readonly stats: HTMLDivElement;
   private readonly message: HTMLDivElement;
   private readonly menu: HTMLDivElement;
@@ -218,6 +250,18 @@ export class Hud {
     this.hotbarLabel = document.createElement("div");
     this.hotbarLabel.className = "bf-hotbar-label";
     this.root.appendChild(this.hotbarLabel);
+
+    // The break-progress bar. Hidden until the player is actually breaking
+    // something, so it does not sit on screen doing nothing.
+    this.breakBar = document.createElement("div");
+    this.breakBar.className = "bf-break";
+    this.breakFill = document.createElement("i");
+    this.breakBar.appendChild(this.breakFill);
+    this.root.appendChild(this.breakBar);
+
+    this.breakLabel = document.createElement("div");
+    this.breakLabel.className = "bf-break-label";
+    this.root.appendChild(this.breakLabel);
 
     this.hotbar = document.createElement("div");
     this.hotbar.className = "bf-hotbar";
@@ -279,6 +323,18 @@ export class Hud {
         return el;
       }),
     );
+
+    if (state.breakProgress !== null && state.breakProgress > 0) {
+      this.breakBar.classList.add("bf-active");
+      this.breakFill.style.width = `${Math.round(state.breakProgress * 100)}%`;
+      this.breakLabel.classList.add("bf-active");
+      this.breakLabel.textContent = state.breakingBlock
+        ? `Breaking ${blockLabel(state.breakingBlock)}`
+        : "Breaking";
+    } else {
+      this.breakBar.classList.remove("bf-active");
+      this.breakLabel.classList.remove("bf-active");
+    }
 
     const selected = state.hotbar[state.selectedSlot];
     this.hotbarLabel.textContent = selected?.id

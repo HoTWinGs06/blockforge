@@ -23,7 +23,17 @@ export function boot(): void {
     throw new Error("canvas #game not found");
   }
   void import("./main.js").then(({ mountGame }) => {
-    mountGame(canvas, new EngineWorld());
+    const game = mountGame(canvas, new EngineWorld());
+    // Publish the handle so the browser tests can drive the game the way a
+    // player does - look down at the ground, hold the break button - rather
+    // than reaching into internals they do not own.
+    //
+    // The handle comes off the Game instance, not off the module's
+    // `gameHandle` export: that export is a live binding assigned INSIDE
+    // mountGame, so destructuring it at import time captures the value
+    // BEFORE mountGame has run - which is undefined, and it stays undefined
+    // for the life of the page.
+    (window as unknown as { __blockforge?: unknown }).__blockforge = game.handle;
   });
 }
 

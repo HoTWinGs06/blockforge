@@ -11,7 +11,7 @@
  */
 
 import { BlockId, type ChunkKey, type PlayerState, type Vec3 } from "./core/types.js";
-import { CHUNK_SIZE_Y } from "./core/constants.js";
+import { CHUNK_SIZE_Y, breakSeconds } from "./core/constants.js";
 import {
   moveWithCollisions,
   stepPhysics,
@@ -47,7 +47,20 @@ export interface EngineBridge {
 /** How many hotbar slots the HUD shows. */
 const HOTBAR_SLOTS = 9;
 const EYE_HEIGHT = 1.62;
-const WALK_SPEED = 4.5;
+/**
+ * Walking speed, in blocks per second.
+ *
+ * The operator said "make the player speed slower". 4.5 was too fast - it is
+ * quicker than most first-person games feel, and it made the camera look
+ * twitchy. 3.2 is the number the architect picked and it is right: it still
+ * covers ground at a decent clip, but the camera settles instead of skating.
+ * Shift multiplies it by SPRINT_MULTIPLIER so sprinting still reads as a
+ * sprint.
+ */
+const WALK_SPEED = 3.2;
+
+/** How much faster the player moves while sprinting. */
+const SPRINT_MULTIPLIER = 1.8;
 const JUMP_SPEED = 8.0;
 const REACH = 6.0;
 
@@ -67,6 +80,10 @@ export class Game {
 
   private readonly keys = new Set<string>();
   private selectedSlot = 0;
+  /** True while the player is holding the break button. */
+  private breaking = false;
+  /** The in-progress break, or null. */
+  private breakState: { key: string; elapsed: number; total: number } | null = null;
   private health = 20;
   private hunger = 20;
   private message: string | null = null;
@@ -142,6 +159,7 @@ export class Game {
     }
     this.applyGravity(dt);
 
+    this.updateBreaking(dt);
     this.renderer.applyPlayer(this.playerState);
     this.updateView();
     this.updateHud();
@@ -177,7 +195,7 @@ export class Game {
 
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
-    const speed = this.keys.has("ShiftLeft") ? WALK_SPEED * 1.8 : WALK_SPEED;
+    const speed = this.keys.has("ShiftLeft") ? WALK_SPEED * SPRINT_MULTIPLIER : WALK_SPEED;
     const vx = (-sin * forward + cos * strafe) * speed;
     const vz = (-cos * forward - sin * strafe) * speed;
 
@@ -229,20 +247,79 @@ export class Game {
   }
 
   /** Break or place the block the player is aiming at. */
+  /**
+   * Break or place the block the player is aiming at.
+   *
+   * T70: breaking is a HOLD, not a click. The block has a hardness - the times
+   * are frozen in the core contract as BREAK_TIME_SECONDS / breakSeconds() -
+   * so the player holds the button and a timer runs, and the block only
+   * breaks when the timer completes. Every block has its own time, from a
+   * tenth of a second for foliage to nine seconds for voidstone, which is what
+   * makes the world feel like it has weight.
+   *
+   * Placing stays a single action: it is not a hold.
+   */
   private act(place: boolean): void {
     const hit = this.pickBlock();
     if (!hit) {
       this.sound.play("deny");
+      this.breakState = null;
       return;
     }
     if (place) {
-      this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Rubble);
-      this.sound.play("place");
-    } else {
+      this.placeBlock(hit);
+      return;
+    }
+    // A fresh press starts the hold. The block's HARDNESS comes from the
+    // frozen core table, keyed by the block kind at that position.
+    const kind = this.engine.blockAt(hit.x, hit.y, hit.z);
+    if (!this.breakState || this.breakState.key !== this.keyOf(hit)) {
+      this.breakState = {
+        key: this.keyOf(hit),
+        elapsed: 0,
+        total: breakSeconds(String(kind)),
+      };
+    }
+  }
+
+  private placeBlock(hit: { x: number; y: number; z: number }): void {
+    this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Rubble);
+    this.sound.play("place");
+    this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
+  }
+
+  private keyOf(hit: { x: number; y: number; z: number }): string {
+    return `${hit.x},${hit.y},${hit.z}`;
+  }
+
+  /**
+   * Advance the break timer.
+   *
+   * Called every frame while the player is holding the break button. When the
+   * timer completes, the block breaks.
+   */
+  private updateBreaking(dt: number): void {
+    if (!this.breaking) {
+      this.breakState = null;
+      return;
+    }
+    const state = this.breakState;
+    if (!state) {
+      return;
+    }
+    // If the player looked away, the hold resets.
+    const hit = this.pickBlock();
+    if (!hit || this.keyOf(hit) !== state.key) {
+      this.breakState = null;
+      return;
+    }
+    state.elapsed += dt;
+    if (state.elapsed >= state.total) {
       this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Air);
       this.sound.play("break");
+      this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
+      this.breakState = null;
     }
-    this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
   }
 
   /** Ray-march from the eye along the look direction and return the first solid block. */
@@ -294,7 +371,28 @@ export class Game {
       health: this.health,
       hunger: this.hunger,
       message: this.message,
+      breakProgress: this.breakProgress(),
+      breakingBlock: this.breakBlock(),
     });
+  }
+
+  /** How far through the break the player is, from 0 to 1, or null. */
+  private breakProgress(): number | null {
+    const state = this.breakState;
+    if (!state || state.total <= 0) {
+      return null;
+    }
+    return Math.max(0, Math.min(1, state.elapsed / state.total));
+  }
+
+  /** The kind of block being broken, or null. */
+  private breakBlock(): BlockId | null {
+    const state = this.breakState;
+    if (!state) {
+      return null;
+    }
+    const hit = this.pickBlock();
+    return hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null;
   }
 
   /** Rebuild the meshes for every chunk the engine says is out of date. */
@@ -323,6 +421,7 @@ export class Game {
         return;
       }
       if (event.code === "KeyF" || event.code === "Enter") {
+        this.breaking = true;
         this.act(false);
         return;
       }
@@ -339,10 +438,16 @@ export class Game {
     });
     window.addEventListener("keyup", (event) => {
       this.keys.delete(event.code);
+      if (event.code === "KeyF" || event.code === "Enter") {
+        this.breaking = false;
+      }
     });
     canvas.addEventListener("mousedown", (event) => {
       if (event.button === 0) {
+        // HOLD to break. The timer runs while the button is down, and the
+        // block only breaks when its hardness timer completes.
         this.dragging = true;
+        this.breaking = true;
         this.sound.unlock();
         this.act(false);
       } else if (event.button === 2) {
@@ -351,6 +456,13 @@ export class Game {
     });
     window.addEventListener("mouseup", () => {
       this.dragging = false;
+      this.breaking = false;
+    });
+    // Releasing the button outside the canvas must also end the hold, or the
+    // player would keep mining after dragging off the window.
+    window.addEventListener("blur", () => {
+      this.dragging = false;
+      this.breaking = false;
     });
     window.addEventListener("contextmenu", (event) => event.preventDefault());
     window.addEventListener("mousemove", (event) => {
@@ -379,11 +491,79 @@ export class Game {
   get debugPosition(): Vec3 {
     return { ...this.position };
   }
+
+  /** The handle the browser tests drive. */
+  get handle(): GameHandle {
+    // Captured in a local, because an object literal's getters bind `this` to
+    // the object rather than to the Game.
+    const game = this;
+    return {
+      get state() {
+        return game.playerState;
+      },
+      get view() {
+        return { yaw: game.yaw, pitch: game.pitch };
+      },
+      look: (pitchDelta: number, yawDelta = 0): void => {
+        const limit = Math.PI / 2 - 0.001;
+        game.pitch = Math.max(-limit, Math.min(limit, game.pitch + pitchDelta));
+        game.yaw += yawDelta;
+      },
+      get targeted() {
+        return game.pickBlock();
+      },
+      setBreaking: (holding: boolean): void => {
+        game.breaking = holding;
+        if (holding) {
+          game.act(false);
+        }
+      },
+      get breakProgress() {
+        return game.breakProgress();
+      },
+      get breakingBlock() {
+        return game.breakBlock();
+      },
+    };
+  }
 }
 
 /** Mount the game onto a canvas. */
 export function mountGame(canvas: HTMLCanvasElement, engine: EngineBridge): Game {
   const game = new Game(canvas, engine);
   game.start();
+  gameHandle = game.handle;
   return game;
 }
+
+/**
+ * A handle on the running game, for the browser tests.
+ *
+ * The G2 gate and the feature guards drive the real game in a real browser,
+ * and some of them need to do things a player can only do through the mouse
+ * (look down at the ground, hold a button for a fixed time). Exposing the
+ * instance lets those tests drive the game the way a player would, instead
+ * of asserting on internals that the test does not own.
+ *
+ * It is read-only in spirit: the tests call the same public methods the input
+ * handlers call.
+ */
+export interface GameHandle {
+  /** The current player state. */
+  readonly state: PlayerState;
+  /** Where the player is looking, in radians. */
+  readonly view: { yaw: number; pitch: number };
+  /** Look down (positive) or up (negative) by a number of radians. */
+  look(pitchDelta: number, yawDelta?: number): void;
+  /** The block the player is currently aiming at, if any. */
+  readonly targeted: { x: number; y: number; z: number } | null;
+  /** Start or stop holding the break button. */
+  setBreaking(holding: boolean): void;
+  /** How far through the current break the player is, 0..1, or null. */
+  readonly breakProgress: number | null;
+  /** The kind of block being broken, if any. */
+  readonly breakingBlock: BlockId | null;
+}
+
+/** The handle for the game running in this page, if there is one. */
+export let gameHandle: GameHandle | null = null;
