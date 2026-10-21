@@ -366,6 +366,54 @@ def launch(role: str, brief: Path, task_id: str) -> int:
     return proc.pid
 
 
+def reap_completed() -> None:
+    """Merge a finished role's branch into the integrated branch.
+
+    The agent commits to feature/<role>/<topic> and reports the SHA. If
+    nothing merges it, the work sits on the branch: the next agent for that
+    role branches from the integrated branch and never sees it, and the
+    project stops accumulating. This is the same integration the ARCHITECT has
+    been doing by hand all along, automated.
+
+    Only merges a branch whose task is `done`, and only when the merge is
+    clean. A conflict is logged and left for a human - the dispatcher never
+    resolves a conflict on its own.
+    """
+    tasks = board_tasks()
+    done_by_owner: dict[str, list[dict]] = {}
+    for t_ in tasks:
+        if t_.get("status") == "done" and t_.get("owner") in ROLES:
+            done_by_owner.setdefault(t_["owner"], []).append(t_)
+
+    for role, done_tasks in done_by_owner.items():
+        wt = ROLES[role][0]
+        if not wt.exists():
+            continue
+        rc, branch, _err = run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"], timeout=60)
+        branch = branch.strip()
+        if not branch or branch in ("main", INTEGRATED):
+            continue
+        # is the branch actually ahead of the integrated branch?
+        rc, count, _err = run(
+            ["git", "-C", str(wt), "rev-list", "--count", f"{INTEGRATED}..{branch}"], timeout=60)
+        if rc != 0 or not count.strip() or count.strip() == "0":
+            continue
+        # has this branch already been merged?
+        rc, contains, _err = run(
+            ["git", "-C", str(wt), "branch", "--contains", branch, "--list", INTEGRATED], timeout=60)
+        if INTEGRATED in (contains or ""):
+            continue
+        ids = ", ".join(t_["id"] for t_ in done_tasks)
+        rc, out, err = run(["git", "-C", str(REPO), "merge", "--no-edit", branch], timeout=300)
+        if rc == 0:
+            sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+                                 capture_output=True, text=True, timeout=60).stdout.strip()
+            log(f"REAPED {branch} into {INTEGRATED} (tasks {ids}) -> {sha}")
+        else:
+            run(["git", "-C", str(REPO), "merge", "--abort"], timeout=60)
+            log(f"REAP CONFLICT on {branch} (tasks {ids}) - left for a human: {(err or out)[:160]}")
+
+
 def main() -> int:
     dry = "--dry-run" in sys.argv
     busy, why = host_busy()
@@ -440,6 +488,7 @@ def main() -> int:
             dispatched += 1
         else:
             log(f"lock race on {role}; {task_id} launched as pid {pid} without a lock")
+    reap_completed()
     log(f"pass complete: {dispatched} dispatch(es), {live_agents()} agent(s) running, host {why}")
     return 0
 
