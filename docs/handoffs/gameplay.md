@@ -427,3 +427,27 @@ The tool rules are pure functions of the pack and the spec: no clock, no
 randomness, no DOM, no imports outside `src/core` and `src/gameplay`. The
 same pack and the same tool always give the same result, in any order, in
 any process.
+
+### The victory-log entry, ready for the architect to copy into docs/VICTORIES.md
+
+```
+- [2026-10-21T19:20:00Z] feature — tools wear out, and the wrong tool costs
+  nothing. The operator reported "add crafting tools" and "there is no way
+  to get or build tools" — the recipes were already derived from the
+  contract's TOOL_SPECS, so the missing half was DURABILITY: nothing ever
+  decremented it, a mattock lasted forever, and no tool could break. Now
+  the tool in hand loses one use every time it breaks a block, and when the
+  last use is gone the tool BREAKS and leaves the pack, so the player has
+  to craft another one. The wear is gated on the same canBreak as the drop
+  table, so a block broken with the wrong kind of tool — the refusal the
+  contract froze — costs the tool nothing either, and the two rules can
+  never disagree. The sabre is a weapon: damage by tier, deliberately not
+  in the mining table. Evidence: commit 50ccd68 on feature/gameplay/m1,
+  npm run typecheck exit 0, npm run lint exit 0 with 0 errors, npx vitest
+  run 224/224 in 16 files, npm run build exit 0, and a NEW 60-assertion
+  self-check (scripts/selfcheck/toolsCheck.ts) that crafts a slate mattock,
+  puts it in the pack, takes it in hand, mines with it and watches it wear
+  — M3
+```
+
+Posted to the Milo butler server — message id `1562544121019637823`.
