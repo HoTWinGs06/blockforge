@@ -62,7 +62,7 @@ HERMES = Path.home() / ".hermes" / "hermes-agent" / "hermes"
 MAX_ATTEMPTS = 3
 MAX_TURNS = "500"
 RUN_BUDGET = "3000"
-MAX_CONCURRENT = 1
+MAX_CONCURRENT = 2
 MIN_FREE_MB = 900        # do not dispatch with less headroom than this
 MAX_LOAD_PER_CPU = 3.0   # soft ceiling; the runnable-process count is the hard one
 
