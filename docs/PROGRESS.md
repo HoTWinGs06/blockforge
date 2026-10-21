@@ -148,6 +148,80 @@ brief says never start M(n+1) until every gate of M(n) passes. Raised for the
 architect's decision — finish M1 first, or run ahead and hold the ordering at
 merge time.
 
+## 1e. GitHub access (discovered, verified — do not rediscover)
+
+**Account:** `HoTWinGs06` (user type, not site_admin). Fine-grained token,
+prefix `github_pat_`.
+
+### The token lives in ONE place
+
+```sh
+# Linux host only
+~/.hermes/.env        ->  GITHUB_TOKEN=<the fine-grained PAT>
+```
+
+It is **not** in `~/.config/gh/hosts.yml`, and the `gh` CLI does not read
+`~/.hermes/.env` — you must export it yourself:
+
+```sh
+export GH_TOKEN=$(grep -m1 -oE '^GITHUB_TOKEN=.*' ~/.hermes/.env | cut -d= -f2- | tr -d '"')
+gh auth status        # -> Logged in to github.com account HoTWinGs06 (GH_TOKEN)
+```
+
+### What works, and what does not — measured, not assumed
+
+| Host | `gh` CLI | Git transport to GitHub | Notes |
+|---|---|---|---|
+| Linux build host | **yes**, 2.102.0 at `~/.local/bin/gh` | **HTTPS + token — verified** (`git ls-remote` exit 0) | SSH to GitHub is **not** authorised: the key is offered but never accepted |
+| Windows (the PC) | **not installed** | **HTTPS + Git Credential Manager — verified** (stored credential, user `HoTWinGs06`) | `gh` absent; GCM 2.7.0 present; no GitHub SSH key either (`git@github.com` → permission denied) |
+
+**Use HTTPS remotes everywhere.** SSH to GitHub fails from both hosts.
+
+Linux push without ever writing the token to disk or into a URL:
+
+```sh
+git config --global credential.helper   '!f() { echo username=x-access-token; echo password=$(grep -m1 -oE "^GITHUB_TOKEN=.*" ~/.hermes/.env | cut -d= -f2- | tr -d """); }; f'
+git remote add origin https://github.com/HoTWinGs06/blockforge.git
+```
+
+The Windows side needs nothing extra — GCM already holds the credential.
+
+### gitleaks — now installed on both hosts
+
+Required by the brief before any push, and a gate in the CI workflow.
+
+| Host | Path | Version |
+|---|---|---|
+| Linux | `~/.local/bin/gitleaks` | 8.30.1 |
+| Windows | `C:\Users\JOEL\AppData\Local\Programs\gitleaks\gitleaks.exe` | 8.30.1 |
+
+**The canonical repo currently scans CLEAN** — `gitleaks dir .` over
+`~/workspace/blockforge` reports **0 findings** across ~170 KB. Re-run it
+before every push.
+
+### THE REPO STILL MUST NOT BE CREATED YET
+
+`gh repo view HoTWinGs06/blockforge` → *could not resolve to a Repository*.
+That is correct. The brief says the public repo is created **only after M1
+and M2 gates pass**, and M1 is not complete (the engine has not landed on
+main and G1 is not passed).
+
+When the gate opens, RELEASE creates it with:
+
+```sh
+gh repo create blockforge --public --source=. --remote=origin
+```
+
+One caveat recorded now rather than discovered later: `gh repo create` has
+**no `--dry-run`**, and the token is fine-grained so its scopes are not
+listed by the API. Create-permission therefore cannot be verified without
+creating. If it fails, the fallbacks are a classic PAT with `public_repo`
+scope, or creating the repo once in the browser and letting `gh` attach to
+it — both need no code changes.
+
+The canonical Linux repo currently has **no git remote** (`git remote -v` is
+empty), which is expected until the repo exists.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |
