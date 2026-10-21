@@ -258,3 +258,41 @@ y-major formula `x + 16*(z + 16*y)`. The storage-order contract is trustworthy.
 - Node 24 cannot `import` the core's TypeScript directly (its `"./types.js"` specifiers do
   not resolve to the `.ts` file behind them). The harness transpiles with the pinned
   `typescript` 5.9.3 instead — do not add a new dependency for this.
+
+### 9.7 Cycle 1 continued — the engine's in-flight code attacked
+
+**Commit:** `9a308c9c87d36404d14b3be8d8052a0cc1f0b100` · **Board:** T44, T45, T46, T47 (owner: hermes-linux)
+
+The engine's core existed as **uncommitted work** in `~/workspace/worktrees/bf-engine`
+(`src/core/rng.ts`, `src/core/world/{noise,chunk,blocks}.ts`). A red team that waits for the
+commit arrives late, so RED-TEAM attacked the live code: transpiled it with the pinned
+`typescript` and executed it. `tests/redteam/engine-attack.test.ts` resolves the engine
+directory from `BLOCKFORGE_ENGINE_DIR` and **skips itself when the code is absent**, so it
+keeps running unchanged once the engine commits.
+
+| # | Task | Owner | Severity | Finding | Verified repro |
+|---|---|---|---|---|---|
+| E1 | T44 | hermes-linux | high | `fbm2()` returns **NaN** for `octaves <= 0` (`sum/norm` = `0/0`). A NaN height propagates into every block placement and may not crash at all. | `fbm2(1234, 10.5, 20.5, 0) === NaN`; same for `-3` |
+| E2 | T45 | hermes-linux | high | `fork()` mixes the parent's **current state**, not its seed, so the same label gives a different child stream depending on how much the parent was consumed — order-dependence in the one place the project cannot afford it. | `createRng(42)` → `fork("terrain")` → draw → `fork("terrain")` gives `1766700328,...` vs `3591649458,...` |
+| E3 | T46 | hermes-linux | high | `chunkIndex()` bypasses the frozen `blockIndex()` guard: `chunkIndex(16,0,0) === 16`, which is the storage slot of block **(0,0,1)** — a different block. `chunkIndex(0,256,0) === 65536` is one past the end, so a typed-array write there is **silently dropped**. | direct calls, verified |
+| E4 | T47 | hermes-linux | medium | `valueNoise2` aliases coordinates past int32 (`x \| 0` truncation), and `fbm2` overflows its octave seed: **`fbm2(2^32) === fbm2(0)`** — two different world seeds, one identical world. | `fbm2(4294967296, 10.5, 20.5, 1)` and `fbm2(0, 10.5, 20.5, 1)` both `0.7303423706325702` |
+
+E4 is the dangerous kind of bug for this project: it is **perfectly deterministic**, so it
+passes every hash-based test while still giving two players the same world.
+
+**Verified clean in the engine's code:** the purity scanner reports **no violations** against
+`src/core` in the engine worktree. `getBlock`/`setBlock` bounds-check correctly. `blockOrdinal`
+throws on an unknown id; `blockFromOrdinal` throws `RangeError` for 200, -1 and 1.5.
+`nextInt` never returned an out-of-range value across 290 000 sampled calls (including
+`nextInt(0, 2^32+3)` and `nextInt(0, MAX_SAFE_INTEGER)`). `getState`/`setState` round-trips
+byte-identically.
+
+### 9.8 Finding count
+
+**8 open findings**: F1–F4 against the frozen contract (owner: opencode, T40–T43) and
+E1–E4 against the engine's in-flight code (owner: hermes-linux, T44–T47). All are encoded
+as `it.fails` with a `control:` test pinning current behaviour, so the shared suite stays
+green and each finding announces itself the moment it is fixed.
+
+`npm run test` → **8 files, 77 passed, 32 expected fail** · `npm run typecheck` → exit 0 ·
+`npm run lint` → exit 0 · `npm run coverage` → exit 0, 100% on `src/core`.
