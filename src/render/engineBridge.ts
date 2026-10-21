@@ -9,6 +9,7 @@
  * The engine's ChunkStore (src/engine/chunkStore.ts) already provides
  * everything the render layer needs:
  *   getBlockAt / setBlockAt / isSolid   - world-space block access
+ *   getChunk(key)                       - generates on demand
  *   meshChunk(key)                      - the mesher, with neighbours
  *   hash()                              - the determinism check
  *
@@ -20,10 +21,20 @@ import type { BlockId, ChunkKey } from "../core/types.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Z } from "../core/constants.js";
 import { ChunkStore } from "../engine/index.js";
 import type { WorldRenderer } from "./index.js";
+import { VIEW_RADIUS_CHUNKS } from "./viewDistance.js";
 import type { EngineBridge } from "../main.js";
 
 /** The seed the world is generated from. */
 export const WORLD_SEED = 1337;
+
+/**
+ * How many chunks are kept meshed, in each direction, around the player.
+ *
+ * This is tied to the renderer's fog distance (see FOG_NEAR / FOG_FAR in
+ * renderer.ts) so the fade hides the boundary of the loaded region. Chunks
+ * beyond the radius are unloaded, which keeps the mesh count and the memory
+ * bounded no matter how far the player walks.
+ */
 
 /**
  * The canonical chunk set the determinism hash is computed over.
@@ -54,6 +65,8 @@ const STARTUP_CHUNKS: readonly ChunkKey[] = [
 export class EngineWorld implements EngineBridge {
   private readonly store: ChunkStore;
   private readonly dirty = new Set<string>();
+  private readonly meshed = new Set<string>();
+  private center: ChunkKey = { cx: 0, cz: 0 };
 
   constructor(seed: number = WORLD_SEED) {
     this.store = new ChunkStore(seed);
@@ -72,7 +85,9 @@ export class EngineWorld implements EngineBridge {
 
   setBlock(x: number, y: number, z: number, id: BlockId): void {
     if (this.store.setBlockAt(x, y, z, id)) {
-      this.dirty.add(this.keyOf({ cx: Math.floor(x / CHUNK_SIZE_X), cz: Math.floor(z / CHUNK_SIZE_Z) }));
+      this.dirty.add(
+        this.keyOf({ cx: Math.floor(x / CHUNK_SIZE_X), cz: Math.floor(z / CHUNK_SIZE_Z) }),
+      );
     }
   }
 
@@ -96,6 +111,55 @@ export class EngineWorld implements EngineBridge {
 
   syncChunk(key: ChunkKey, renderer: WorldRenderer): void {
     renderer.setChunk(key, this.store.meshChunk(key));
+    this.meshed.add(this.keyOf(key));
+  }
+
+  /**
+   * Stream chunks around the player.
+   *
+   * The world used to be a fixed five-chunk plus shape, so the player walked
+   * off the edge of the loaded world into empty space where there was no
+   * ground, no collision and therefore no jump. Now the loaded region follows
+   * the player, and chunks that fall outside the radius are unloaded so the
+   * mesh count stays bounded.
+   *
+   * @param playerX the player's world x
+   * @param playerZ the player's world z
+   */
+  updateView(playerX: number, playerZ: number, renderer: WorldRenderer): void {
+    const center: ChunkKey = {
+      cx: Math.floor(playerX / CHUNK_SIZE_X),
+      cz: Math.floor(playerZ / CHUNK_SIZE_Z),
+    };
+
+    if (center.cx !== this.center.cx || center.cz !== this.center.cz) {
+      this.center = center;
+    }
+
+    // Queue every chunk inside the radius that is not meshed yet.
+    for (let dz = -VIEW_RADIUS_CHUNKS; dz <= VIEW_RADIUS_CHUNKS; dz++) {
+      for (let dx = -VIEW_RADIUS_CHUNKS; dx <= VIEW_RADIUS_CHUNKS; dx++) {
+        const key: ChunkKey = { cx: center.cx + dx, cz: center.cz + dz };
+        const id = this.keyOf(key);
+        if (!this.meshed.has(id)) {
+          this.dirty.add(id);
+        }
+      }
+    }
+
+    // Unload anything that has fallen outside the radius.
+    for (const id of [...this.meshed]) {
+      const parts = id.split(",");
+      const cx = Number(parts[0]);
+      const cz = Number(parts[1]);
+      if (
+        Math.abs(cx - center.cx) > VIEW_RADIUS_CHUNKS ||
+        Math.abs(cz - center.cz) > VIEW_RADIUS_CHUNKS
+      ) {
+        this.meshed.delete(id);
+        renderer.removeChunk({ cx, cz });
+      }
+    }
   }
 
   /**

@@ -14,8 +14,12 @@ import * as THREE from "three";
 import type { BlockId, ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
+import { buildSky } from "./sky.js";
+import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
 /** How far the player can reach when breaking or placing a block. */
 export const REACH_DISTANCE = 6;
+
+
 
 /** A chunk mesh built from a MeshOutput. */
 export interface ChunkMesh {
@@ -90,7 +94,10 @@ export class WorldRenderer {
   constructor(canvas: HTMLCanvasElement) {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color("#8fb8e8");
-    this.scene.fog = new THREE.Fog("#8fb8e8", 40, 140);
+    // The fog distance is tied to the engine's VIEW_RADIUS_CHUNKS so the fade
+    // hides the boundary of the loaded region: the player never sees the edge
+    // of the world, they see it fade out into the sky.
+    this.scene.fog = new THREE.Fog("#8fb8e8", FOG_NEAR, FOG_FAR);
 
     this.camera = new THREE.PerspectiveCamera(
       75,
@@ -111,10 +118,15 @@ export class WorldRenderer {
     this.renderer.setPixelRatio(1);
 
     // Sky light plus a warm key light so block faces read clearly.
-    this.scene.add(new THREE.HemisphereLight("#cfe3ff", "#4a4238", 0.85));
-    const sun = new THREE.DirectionalLight("#fff3d6", 0.75);
-    sun.position.set(60, 120, 40);
+    this.scene.add(new THREE.HemisphereLight("#cfe3ff", "#6b6152", 1.15));
+    const sunDirection = new THREE.Vector3(60, 120, 40);
+    const sun = new THREE.DirectionalLight("#fff3d6", 1.35);
+    sun.position.copy(sunDirection);
     this.scene.add(sun);
+
+    // The sky dome and its sun disc share the light's direction, so the
+    // bright spot in the sky and the lit side of the blocks agree.
+    this.scene.add(buildSky(sunDirection));
 
     this.scene.add(this.chunkGroup);
 
