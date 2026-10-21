@@ -108,7 +108,52 @@ export const FINDINGS: readonly Finding[] = [
     promise:
       "chunkKeyToString and chunkKeyFromString are inverses, so a key that is serialised can always be read back.",
     repro:
-      "chunkKeyToString({cx:1.5,cz:2}) === '1.5,2' and chunkKeyFromString('1.5,2') throws; same for {cx:NaN,cz:0}.",
+      "chunkKeyToString({ cx: 1.5, cz: 2 }) === '1.5,2' and chunkKeyFromString('1.5,2') throws; same for {cx:NaN,cz:0}.",
+  },
+  {
+    id: "E1",
+    title: "Engine fbm2() returns NaN for octaves <= 0 (0/0) - NaN heights propagate into world generation",
+    owner: "hermes-linux",
+    boardTask: "T44",
+    status: "open",
+    severity: "high",
+    promise: "fbm2 is the terrain height function and must return a finite number for every input.",
+    repro: "fbm2(1234, 10.5, 20.5, 0) === NaN; fbm2(1234, 10.5, 20.5, -3) === NaN",
+  },
+  {
+    id: "E2",
+    title: "Engine SeededRng.fork() mixes the parent's CURRENT state, not its seed - the child stream shifts with the parent's consumption history",
+    owner: "hermes-linux",
+    boardTask: "T45",
+    status: "open",
+    severity: "high",
+    promise:
+      "fork() must derive a child stream from (seed, label) alone, so subsystems never interfere with each other or with generation order.",
+    repro:
+      "createRng(42).fork('terrain') before and after one draw produce different streams: 1766700328,... vs 3591649458,...",
+  },
+  {
+    id: "E3",
+    title: "Engine chunkIndex() bypasses the frozen blockIndex() guard and silently aliases out-of-range coordinates onto other blocks",
+    owner: "hermes-linux",
+    boardTask: "T46",
+    status: "open",
+    severity: "high",
+    promise: "No path may bypass the frozen blockIndex() RangeError guard.",
+    repro:
+      "chunkIndex(16,0,0) === 16 - the storage slot of block (0,0,1); chunkIndex(0,256,0) === 65536, one past the end, so a typed-array write there is silently dropped",
+  },
+  {
+    id: "E4",
+    title:
+      "Engine noise truncates coordinates and seeds to 32 bits - terrain aliases and fbm2(2^32) === fbm2(0)",
+    owner: "hermes-linux",
+    boardTask: "T47",
+    status: "open",
+    severity: "medium",
+    promise: "Distinct world seeds must produce distinct worlds, and lattice coordinates must not alias.",
+    repro:
+      "fbm2(4294967296, 10.5, 20.5, 1) === fbm2(0, 10.5, 20.5, 1) === 0.7303423706325702; valueNoise2(5, 2^31, 0) === valueNoise2(5, -2^31, 0)",
   },
 ];
 
