@@ -10,9 +10,14 @@
  * synthesised (src/render/audio.ts).
  */
 
-import { BlockId, type ChunkKey, type PlayerState } from "./core/types.js";
+import { BlockId, type ChunkKey, type PlayerState, type Vec3 } from "./core/types.js";
 import { CHUNK_SIZE_Y } from "./core/constants.js";
-import { Hud, SoundBoard, WorldRenderer, chunkKeyOf } from "./render/index.js";
+import {
+  moveWithCollisions,
+  stepPhysics,
+  type SolidWorld,
+} from "./core/physics.js";
+import { Hud, SoundBoard, TitleScreen, WorldRenderer, chunkKeyOf } from "./render/index.js";
 
 /**
  * The shape the render layer needs from the engine.
@@ -31,36 +36,40 @@ export interface EngineBridge {
   syncChunk(key: ChunkKey, renderer: WorldRenderer): void;
   /** The chunks that currently need syncing. */
   pendingChunks(): ChunkKey[];
+  /**
+   * Optional: tell the engine where the player is, so it can stream chunks.
+   * The renderer calls this every frame; an engine that does not stream can
+   * ignore it.
+   */
+  updateView?(playerX: number, playerZ: number, renderer: WorldRenderer): void;
 }
 
-const PLAYER_RADIUS = 0.3;
-const PLAYER_HEIGHT = 1.8;
+/** How many hotbar slots the HUD shows. */
+const HOTBAR_SLOTS = 9;
 const EYE_HEIGHT = 1.62;
 const WALK_SPEED = 4.5;
 const JUMP_SPEED = 8.0;
-const GRAVITY = 24.0;
 const REACH = 6.0;
-
-interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
 
 /** The running game. */
 export class Game {
   private readonly renderer: WorldRenderer;
   private readonly hud: Hud;
   private readonly sound: SoundBoard;
+  private readonly title: TitleScreen;
   private readonly engine: EngineBridge;
 
-  private readonly position: Vec3 = { x: 0.5, y: 90, z: 0.5 };
-  private readonly velocity: Vec3 = { x: 0, y: 0, z: 0 };
+  private position: Vec3 = { x: 0.5, y: 90, z: 0.5 };
+  private velocity: Vec3 = { x: 0, y: 0, z: 0 };
   private yaw = 0;
   private pitch = 0;
   private onGround = false;
 
   private readonly keys = new Set<string>();
+  private selectedSlot = 0;
+  private health = 20;
+  private hunger = 20;
+  private message: string | null = null;
   private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
   private running = false;
@@ -70,7 +79,18 @@ export class Game {
     this.renderer = new WorldRenderer(canvas);
     this.hud = new Hud();
     this.sound = new SoundBoard();
+    this.title = new TitleScreen();
     this.bindInput(canvas);
+
+    // The title screen's "click to play" is what captures the pointer. The
+    // operator reported that mouse-look felt broken on first use, and the
+    // reason was that the game dropped the player in with the mouse NOT
+    // captured and nothing told them to click. Now the first click is the
+    // play button, so the first thing the player does visibly works.
+    this.title.root.addEventListener("click", () => {
+      this.sound.unlock();
+      void canvas.requestPointerLock?.();
+    });
   }
 
   /** The player's current state, in the frozen PlayerState shape. */
@@ -93,6 +113,7 @@ export class Game {
     }
     this.running = true;
     this.syncChunks();
+    this.title.setReady("world ready");
     const loop = (): void => {
       if (!this.running) {
         return;
@@ -113,13 +134,16 @@ export class Game {
   step(): void {
     const dt = 1 / 60;
 
-    if (!this.hud.menuOpen) {
+    // No movement or looking until the player has pressed play. The game
+    // still renders, so the title screen has a live world behind it.
+    if (this.title.hasStarted && !this.hud.menuOpen) {
       this.applyLook();
       this.applyMove(dt);
     }
     this.applyGravity(dt);
 
     this.renderer.applyPlayer(this.playerState);
+    this.updateView();
     this.updateHud();
   }
 
@@ -145,8 +169,7 @@ export class Game {
 
     const len = Math.hypot(forward, strafe);
     if (len === 0) {
-      this.velocity.x = 0;
-      this.velocity.z = 0;
+      this.velocity = { ...this.velocity, x: 0, z: 0 };
       return;
     }
     forward /= len;
@@ -155,78 +178,54 @@ export class Game {
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
     const speed = this.keys.has("ShiftLeft") ? WALK_SPEED * 1.8 : WALK_SPEED;
-    this.velocity.x = (-sin * forward + cos * strafe) * speed;
-    this.velocity.z = (-cos * forward - sin * strafe) * speed;
+    const vx = (-sin * forward + cos * strafe) * speed;
+    const vz = (-cos * forward - sin * strafe) * speed;
 
-    this.moveWithCollision(this.velocity.x * dt, 0, 0);
-    this.moveWithCollision(0, 0, this.velocity.z * dt);
-  }
-
-  private applyGravity(dt: number): void {
-    this.velocity.y -= GRAVITY * dt;
-    if (this.keys.has("Space") && this.onGround) {
-      this.velocity.y = JUMP_SPEED;
-      this.onGround = false;
-    }
-    this.moveWithCollision(0, this.velocity.y * dt, 0);
-    if (this.velocity.y < -40) {
-      this.velocity.y = 0;
-    }
+    // Horizontal movement uses the engine's axis-separated move so the player
+    // slides along walls instead of sticking to them.
+    const world = this.solidWorld();
+    const xResult = moveWithCollisions(
+      this.position,
+      this.velocity,
+      { x: vx * dt, y: 0, z: 0 },
+      world,
+    );
+    this.position = xResult.position;
+    const zResult = moveWithCollisions(
+      this.position,
+      { ...xResult.velocity, x: vx, z: vz },
+      { x: 0, y: 0, z: vz * dt },
+      world,
+    );
+    this.position = zResult.position;
+    this.velocity = { ...zResult.velocity, x: vx, z: vz };
   }
 
   /**
-   * Move on one axis and stop at the first solid block. Axis-separated so the
-   * player slides along walls instead of sticking.
+   * Apply gravity and advance the player.
+   *
+   * This uses the ENGINE's tested physics module, not a private copy. An
+   * earlier version of this file carried its own collides()/moveWithCollisions
+   * implementation, which meant the module that was designed, documented and
+   * tested for this was not the code that actually moved the player - the two
+   * drifted, and src/core/physics.ts sat at 5.68% coverage while the game ran.
    */
-  private moveWithCollision(dx: number, dy: number, dz: number): void {
-    const next = { x: this.position.x + dx, y: this.position.y + dy, z: this.position.z + dz };
-    if (this.collides(next)) {
-      if (dy < 0) {
-        this.onGround = true;
-      }
-      // Only the axis that actually collided may have its velocity zeroed.
-      // Zeroing the vertical velocity on a HORIZONTAL collision cancelled
-      // the jump the moment the player touched a wall: the jump set
-      // velocity.y, the horizontal move then hit the wall and cleared it
-      // in the same frame, so the player rose by one frame's worth and
-      // stopped. That is why the jump only worked in open ground.
-      if (dy !== 0) {
-        this.velocity.y = 0;
-        return;
-      }
-      if (dx !== 0) {
-        this.velocity.x = 0;
-      }
-      if (dz !== 0) {
-        this.velocity.z = 0;
-      }
-      return;
-    }
-    this.position.x = next.x;
-    this.position.y = next.y;
-    this.position.z = next.z;
-    if (dy < 0) {
+  private applyGravity(dt: number): void {
+    if (this.keys.has("Space") && this.onGround) {
+      this.velocity = { ...this.velocity, y: JUMP_SPEED };
       this.onGround = false;
     }
+    const result = stepPhysics(this.position, this.velocity, dt, this.solidWorld());
+    this.position = result.position;
+    this.velocity = result.velocity;
+    this.onGround = result.onGround;
   }
 
-  private collides(at: Vec3): boolean {
-    const minX = Math.floor(at.x - PLAYER_RADIUS);
-    const maxX = Math.floor(at.x + PLAYER_RADIUS);
-    const minY = Math.floor(at.y);
-    const maxY = Math.floor(at.y + PLAYER_HEIGHT);
-    const minZ = Math.floor(at.z - PLAYER_RADIUS);
-    const maxZ = Math.floor(at.z + PLAYER_RADIUS);
-    for (let y = minY; y <= maxY; y++) {
-      for (let z = minZ; z <= maxZ; z++) {
-        for (let x = minX; x <= maxX; x++) {
-          if (this.engine.isSolid(x, y, z)) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
+  /** The engine's physics needs a world to collide against. */
+  private solidWorld(): SolidWorld {
+    return {
+      isSolid: (x: number, y: number, z: number): boolean => this.engine.isSolid(x, y, z),
+    };
   }
 
   /** Break or place the block the player is aiming at. */
@@ -286,11 +285,15 @@ export class Game {
     this.hud.update({
       targetedBlock: hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null,
       targetedPosition: hit,
-      hotbar: [],
-      selectedSlot: 0,
-      health: 20,
-      hunger: 20,
-      message: null,
+      // Nine slots, always. The ITEMS are M3 (GAMEPLAY) content and are empty
+      // for now, but the hotbar SHELL is M1: the operator reported "no
+      // inventory bar", and a bar made of nothing is not a bar. Empty slots
+      // still read as slots.
+      hotbar: Array.from({ length: HOTBAR_SLOTS }, () => ({ id: "", count: 0 })),
+      selectedSlot: this.selectedSlot,
+      health: this.health,
+      hunger: this.hunger,
+      message: this.message,
     });
   }
 
@@ -299,6 +302,18 @@ export class Game {
     for (const key of this.engine.pendingChunks()) {
       this.engine.syncChunk(key, this.renderer);
     }
+  }
+
+  /**
+   * Keep the loaded region centred on the player.
+   *
+   * The world used to be a fixed five-chunk plus shape, so walking off it put
+   * the player in empty space with no ground, no collision and therefore no
+   * jump. The engine now streams chunks around the player instead.
+   */
+  private updateView(): void {
+    this.engine.updateView?.(this.position.x, this.position.z, this.renderer);
+    this.syncChunks();
   }
 
   private bindInput(canvas: HTMLCanvasElement): void {
@@ -313,6 +328,11 @@ export class Game {
       }
       if (event.code === "KeyR") {
         this.act(true);
+        return;
+      }
+      // Number keys select a hotbar slot.
+      if (/^Digit[1-9]$/.test(event.code)) {
+        this.selectedSlot = Number(event.code.slice(-1)) - 1;
         return;
       }
       this.keys.add(event.code);
