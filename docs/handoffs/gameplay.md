@@ -1,5 +1,22 @@
 # Gameplay handoff
 
+## Victory log entry (the ARCHITECT owns docs/VICTORIES.md, so it goes here)
+
+- [2026-10-21T17:05:00Z] feature — crafting exists: the recipe table, the
+  2x2/3x3 grids, shaped and shapeless matching, and ingredient tags, so a
+  recipe can ask for "any rock" and take slate or rubble. The sixteen tool
+  recipes are DERIVED from the contract's `TOOL_SPECS`, so a tool added to
+  the contract gets a recipe automatically and a recipe can never disagree
+  with the tool it makes — each carries the tool's own contract durability.
+  A 3x3 recipe does not match a 2x2 grid, which is the rule that makes a
+  craftbench worth finding — evidence: commit
+  afbebb02514775360c3fe5c4772b551b4a947858, `npm run typecheck` exit 0,
+  `npm run lint` exit 0, `npx vitest run` 224/224 passed, `npm run build`
+  exit 0, and 51/51 assertions in `scripts/selfcheck/craftingCheck.js`
+  (wired into `gate:selfcheck`) — M3
+- [2026-10-21T17:05:00Z] milestone — posted to the Milo butler server,
+  message id 1562511649649467504 — M3
+
 ## T81 — M3/GAMEPLAY: crafting
 
 **Branch:** `feature/gameplay/m1` · **Commit:** see the board note for T81
