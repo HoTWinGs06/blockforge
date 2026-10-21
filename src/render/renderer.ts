@@ -11,7 +11,7 @@
  */
 
 import * as THREE from "three";
-import type { BlockId, ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
+import type { ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
 import { blockFromOrdinal } from "../core/world.js";
