@@ -794,3 +794,41 @@ a solid block after a multi-block move.
   `tests/redteam/engine-attack.test.ts`.
 - **Coordinator (`hermes-win`)** — G1 passes. G5 (lint + typecheck) is
   clean. G6 is unaffected; `tests/determinism.test.ts` still passes.
+
+## 9. The fleet dispatcher (Linux-side autonomy)
+
+The role agents — engine, gameplay, netcode, redteam, release, renderui,
+testauthor — are **one-shot**: they are dispatched for a specific job, write a
+summary heartbeat and exit. Nothing on the build host was polling the board or
+calling `claim-next`, so a task assigned to a role sat there until a human
+picked it up. The dispatch loop lived in a pane on the operator's laptop.
+
+`scripts/fleet/dispatcher.py` closes that loop. It runs on the **Linux build
+host** (so it keeps working when the laptop is off), and every two minutes it:
+
+1. reads the board and finds a `todo` task owned by a role agent
+2. refuses to dispatch if the host is not idle enough (see below)
+3. brings the role's worktree up to `feature/integrated/m1`
+4. writes the task's brief — the board notes plus the role's standing brief
+5. claims the task on the board (`status=doing`) **before** launching
+6. launches the agent detached:
+   `hermes chat --query-file <brief> --oneshot --max-turns 500 --run-budget 3000 --yolo`
+7. records the attempt count, and re-dispatches a dead agent's task up to
+   `MAX_ATTEMPTS` before leaving it alone
+
+**The host is small** — 2 CPUs, 4 GB of RAM, already hosting the Hermes
+dashboard, the Hermes gateway, the Discord bot and the board cron. A Playwright
+suite, a typecheck and an agent at once took it to load 21 on 2 cores, at which
+point sshd stopped forking and the box became unreachable for minutes. So the
+dispatcher **refuses to dispatch** unless a CPU is genuinely free and there is
+memory headroom. It measures *runnable processes right now*, not the 1-minute
+load average, because the average is a decaying number that stays high for
+minutes after the work that caused it has finished.
+
+**Consequences for the fleet:**
+- a role task now starts by itself, unattended, on the build host
+- `docs/PROGRESS.md` and `docs/VICTORIES.md` are the ARCHITECT's alone —
+  agents are told to put their handoff in the board notes and in
+  `docs/handoffs/<role>.md`, because seven agents appending to one file in
+  seven worktrees guarantees conflicts and lost work
+- a task with no live agent and no completion is re-dispatched automatically
