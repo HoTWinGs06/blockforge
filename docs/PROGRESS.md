@@ -6,9 +6,14 @@
 
 **Project:** BlockForge — an original, unofficial Minecraft-inspired voxel sandbox.
 **Current milestone:** M1 — ENGINE
-**Last updated:** 2026-10-21 (M1 kickoff cycle, post-kickoff)
-**Status:** M1 kickoff complete. Contract frozen, repo scaffolded, toolchain green,
-M1 breakdown posted to the board, and Playwright proven working on the Windows host.
+**Last updated:** 2026-10-21 (M1 ENGINE cycle 1 — engine landed)
+**Status:** **ENGINE LANDED.** The whole M1 engine is committed on
+`feature/engine/m1`: PRNG, noise, world generation, greedy mesher, physics,
+raycast, chunk store and worker pool. G3 (3.96 ms/chunk avg) and G6
+(identical hashes across fresh processes) both PASS. The TEST AUTHOR's
+suite (52528ad) is merged and passes 97/97. G1 is NOT closed: coverage is
+40.17% because the engine's new code has no tests against it yet — that is
+the TEST AUTHOR's remaining work, and the gate is correctly armed.
 
 ---
 
@@ -24,10 +29,57 @@ M1 breakdown posted to the board, and Playwright proven working on the Windows h
 | Toolchain | `package.json`, `tsconfig.json`, `vite.config.ts`, `vitest.config.ts`, `eslint.config.js` | All versions pinned exactly. No `^`. |
 | Layout | `src/{core,engine,render,gameplay,net}`, `server/`, `scripts/bench/`, `docs/` | Matches the repository contract exactly. |
 | Repo | `~/workspace/blockforge` (Linux host) | Git initialised, branch `main`. |
+| **Seeded PRNG** | `src/core/rng.ts` | `SeededRngImpl` — own splitmix32, no library. `fork()` is PURE (does not advance the parent), so subsystems fork in any order and still match. 32-bit state round-trips exactly through the frozen `RngState` (a `number`). |
+| **Value noise** | `src/core/noise.ts` | Hash-based 2D/3D value noise + fBm. A sample is a function of `(seed, x, y, z)` alone, so terrain is continuous across chunk borders. |
+| **World generation** | `src/core/world.ts` | Block metadata (ordinals, face rules), chunk storage helpers, terrain generator, `World` class. A chunk is a pure function of `(seed, chunkKey)`. |
+| **Greedy mesher** | `src/core/meshing.ts` | `meshSection(chunk, section, neighbours?)` and `meshChunk(chunk, neighbours?)`. Stable vertex order; `blocks.length === indices.length / 3`. |
+| **Physics** | `src/core/physics.ts` | AABB collision + gravity, axis-resolved, snapping to the surface it hit. Pure. |
+| **Raycast** | `src/core/raycast.ts` | DDA (Amanatides & Woo). Returns the hit block, the face normal, and the placement cell. Pure. |
+| **Chunk store** | `src/engine/chunkStore.ts` | Generation on demand, world-space block read/write, neighbour lookup for the mesher. Implements `SolidWorld` and `RaycastWorld`. |
+| **Worker pool** | `src/engine/workerPool.ts` | Chunk generation off the main thread. Injectable worker factory: real Web Workers in the browser, a plain function in Node. |
+| **Gate scripts** | `scripts/{determinism,bench,selfcheck}/` | G3 bench, G6 determinism proof, and the mesher/physics self-checks. All TypeScript, so they are typechecked and linted. |
 
-**Not yet done (do not assume otherwise):** no engine code, no renderer, no
-tests, no CI, no README, no GitHub repo. The public repo is created only
-after M1 and M2 gates pass.
+**Not yet done (do not assume otherwise):** the engine's new code has **no
+tests against it** — the TEST AUTHOR's suite only covers the frozen contract
+and the dormant specs. G1 is therefore **NOT** closed: coverage is 40.17%
+against an 85% floor. There is still no renderer, no CI, no README, no
+GitHub repo. The public repo is created only after M1 and M2 gates pass.
+
+### 1a. ENGINE contracts the downstream agents can rely on
+
+These are the conventions the engine guarantees. They are stated so the
+TEST AUTHOR can pin them and the RENDERER can consume them without guessing.
+
+**Mesher output** (`src/core/meshing.ts`):
+- `positions` are local to what was meshed — x and z run 0..16; y runs
+  0..**16 for a section** and 0..**256 for a whole chunk**. A section mesh
+  is placed at `section * SECTION_HEIGHT` by the renderer.
+- `normals` are unit axis vectors, one per vertex. The winding always
+  agrees with the normal (front-facing), verified by the self-check.
+- `uvs` run 0..width and 0..height in **block units** — a merged 4×3 quad
+  gets a 4×3 texture. **The renderer must wrap textures.**
+- `blocks` hold the **ordinal** of the face's `BlockId` (the same ordinal
+  the chunk storage uses), one entry per triangle, parallel to `indices`.
+- A missing neighbour chunk is treated as air, so a chunk at the edge of a
+  generated region still meshes.
+
+**World** (`src/core/world.ts`): `World.getChunk(key)` generates on demand
+and caches; `World.hash()` mixes the **seed** in first, so two worlds with
+different seeds can never hash the same, even when empty.
+
+**Physics** (`src/core/physics.ts`): a blocked axis **snaps** to the surface
+it hit — a body resting on a block has its feet exactly on the block's top
+face (y = 1 for a block at y = 0), and a body sliding into a wall stops
+flush against it.
+
+**Chunk store** (`src/engine/chunkStore.ts`): `getBlockAt` / `setBlockAt` /
+`isSolid` are world-space; `meshChunk(key)` and `meshSection(key, section)`
+take the neighbours from the store automatically.
+
+**Flat file layout, deliberately.** `src/core/*.ts` is flat (rng, noise,
+world, meshing, physics, raycast) rather than a directory of sub-barrels,
+because the TEST AUTHOR's purity suite scans the **top-level** files of
+`src/core` — a nested module would silently escape it.
 
 ## 1b. Repository topology (read this before touching anything)
 
@@ -162,6 +214,73 @@ fails with "Executable doesn't exist". Always run it from inside the repo.
 
 RELEASE (T29) owns the final decision on where CI runs the smoke test.
 
+## 3b. ENGINE gate results (M1 cycle 1 — read this, do not re-measure blind)
+
+Measured on the Linux host from the committed tree at `0276bad`.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| **G3** — chunk generation + meshing | **PASS** | avg **3.958 ms/chunk**, p95 **4.175 ms** (budget: avg < 16 ms). Generation avg 1.176 ms, meshing avg 2.782 ms. `node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js` |
+| **G6** — cross-process determinism | **PASS** | 5 seeds × 2 **fresh processes**, all identical: seed 0 `d6e4cc59`, seed 1 `bd3879a7`, seed 12345 `57b308bb`, seed 2147483647 `66e09129`, seed -1 `4df02b13`. `node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js` |
+| **G5** — typecheck / lint | **PASS** | `npm run typecheck` exit 0, `npm run lint` exit 0 (0 errors, 0 warnings), both re-read after the last commit. |
+| **G1** — coverage floor | **NOT CLOSED** | `npm run coverage` exit 1 at 40.17% lines / 39.55% statements / 35.63% functions / 26.27% branches, against the 85% floor. The TEST AUTHOR's suite (52528ad) covers the frozen contract and the dormant specs; it does not exercise the engine's new code. **This is the gate working, not a regression — do not lower the floor.** |
+| **Purity** — `src/core` static scan | **PASS** | 0 violations across all 9 top-level core files, using the TEST AUTHOR's own patterns and comment-stripping: no `Math.random`, `Date.now`, `performance.now`, no DOM/`localStorage`/`indexedDB`, no network calls, no Three.js, no cross-layer imports. |
+
+**G6 both hashes, as required by the brief** (each seed run twice, in two
+separate processes, compared):
+
+```
+seed 0           d6e4cc59 == d6e4cc59 MATCH
+seed 1           bd3879a7 == bd3879a7 MATCH
+seed 12345       57b308bb == 57b308bb MATCH
+seed 2147483647  66e09129 == 66e09129 MATCH
+seed -1          4df02b13 == 4df02b13 MATCH
+G6 PASS: 5 seeds, identical hashes across fresh processes
+```
+
+### How to run the gate scripts
+
+The scripts are TypeScript, so they are typechecked and linted like the rest
+of the code. Build them once, then run:
+
+```sh
+export PATH="$HOME/.local/opt/node/bin:$HOME/.local/bin:$PATH"
+cd ~/workspace/worktrees/bf-engine
+npx tsc -p scripts/tsconfig.build.json
+B=node_modules/.cache/blockforge-scripts
+node $B/scripts/bench/chunkBench.js        # G3
+node $B/scripts/determinism/check.js       # G6
+node $B/scripts/selfcheck/meshCheck.js    # mesher invariants
+node $B/scripts/selfcheck/engineCheck.js  # physics + raycast invariants
+```
+
+`scripts/tsconfig.build.json` emits to `node_modules/.cache/blockforge-scripts`,
+which is already gitignored — nothing in the repo is polluted by a build.
+
+### ENGINE commits (branch `feature/engine/m1`)
+
+| SHA | What |
+|---|---|
+| `1056b3a` | `feat(core)`: seeded PRNG, value noise, chunked world generation |
+| `c035e87` | `feat(core)`: greedy mesher with a stable, comparable vertex order |
+| `52e6891` | `feat(core)`: AABB physics with gravity, and DDA raycasting |
+| `d2bb059` | `feat(engine)`: chunk store and worker orchestration |
+| `0276bad` | `feat(core)`: barrel exports + the gate scripts |
+
+The TEST AUTHOR's suite (`52528ad`) is merged into this branch, so the
+engine is verified against a real suite rather than an empty core.
+
+### A defect found and fixed from the render side
+
+The RENDER agent found that `hash()` was **vacuous on an empty store** — it
+walked only the loaded chunks, so every seed produced the same constant
+`811c9dc5` (the FNV-1a offset basis). It also never mixed the **seed** in
+at all, so two worlds could in principle collide. Fixed in both
+`World.hash()` and `ChunkStore.hash()`: the seed is mixed in first, as four
+little-endian bytes. `scripts/selfcheck/engineCheck.ts` now pins this — an
+empty world still hashes differently per seed, the same seed and chunks hash
+the same, and loading a chunk changes the hash.
+
 ## 4. Milo butler discovery (do not rediscover)
 
 The brief required discovering the Milo interface exactly rather than
@@ -214,19 +333,25 @@ None open. See `docs/BLOCKERS.md`.
 
 Full detail for every task is on the board. Summary:
 
-1. **T27 TEST AUTHOR (antigravity)** — write the determinism/purity suite
-   *first*: `src/core` must contain no `Math.random`/`Date.now`/`performance.now`,
-   no DOM access, no `localStorage`/`IndexedDB`, no network calls, no Three.js
-   import; and must not import from `src/engine`, `src/render`, `src/net`,
-   `src/gameplay` or `server/`. This is the load-bearing property of the whole
-   project, and the ENGINE agent builds against this spec — lead with it.
-2. **T26 ENGINE (hermes-linux)** — implement `SeededRng` in `src/core/rng.ts`
-   (own implementation, no library), then terrain generation, greedy meshing,
-   physics and raycasting against the frozen contract. Nothing in the contract
-   may be renamed.
+1. **T27 TEST AUTHOR (antigravity)** — **G1's remaining work, and the
+   critical path now.** The engine's code exists, so the coverage denominator
+   is real: 40.17% lines against the 85% floor. The files needing tests, in
+   priority order: `src/core/raycast.ts` (0%), `src/core/noise.ts` (1.8%),
+   `src/core/world.ts` (17.9%), `src/core/physics.ts` (5.7%),
+   `src/core/meshing.ts` (86.1%, gaps at 184/189-190/427-442),
+   `src/core/rng.ts` (82.9%, gaps at 82/87/92/120-122). The behaviour
+   contracts to pin are in **§1a** above. The suite's dormant rng and mesher
+   specs now **arm against the real code** and pass. **Do not lower the
+   floor** — the gate is correctly armed.
+2. **T26 ENGINE (hermes-linux)** — **DONE for M1.** The whole engine is
+   landed and committed on `feature/engine/m1` (see §3b for the SHAs and the
+   measured gates). Nothing in the frozen contract was renamed. The engine's
+   API for the renderer is in §1a.
 3. **T28 RENDER/UI (hermes-win)** — first-person camera and block
    break/place wiring; textures generated procedurally with canvas 2D (no
-   committed art assets).
+   committed art assets). **MERGE ORDER: ENGINE FIRST** — the render branch
+   imports `ChunkStore` from `../engine/index.js` and does not build without
+   `src/engine/` and `src/core/world.ts` present.
 4. **T29 RELEASE (hermes-win)** — set up `.github/workflows/ci.yml` (the repo
    has no CI yet, so G5's "CI green" is not yet satisfiable) and the README
    with the required disclaimer:
