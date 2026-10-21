@@ -191,7 +191,31 @@ rule measuring the background, so the seam is the better fix.
 - `npm run typecheck` - exit 0.
 - `npm run lint` - 0 errors (7 pre-existing warnings in `scripts/verify.mjs`).
 - `npx playwright test e2e/viewmodel.spec.ts` - 3 passed.
+- `npx playwright test` (the whole suite) - **3 failed, 20 passed**:
+  - `e2e/viewmodel.spec.ts:27` - the T71 guard. STILL FAILS, on purpose: the
+    guard is the broken side, and it is the TEST AUTHOR's file.
+  - `e2e/break-hold.spec.ts:55` and `:143` - the T70 hold-to-break guard.
+    **PRE-EXISTING, not mine**: checked out the parent commit's `src/` and
+    ran the same file - 2 failed there too, identically. That is a
+    different task (T70).
 - The hand's pixels are now 100% identical across camera poses (was 0.8%).
 - The face turned toward the camera is lit, not black: `[100,105,106]`
-  (was `[30,30,30]`).
+  (was `[30,30,30]`). Screenshot-verified: the rubble texture is visible
+  across the whole cube.
 - `viewmodelScreenBounds()` returns the same box at five camera poses.
+
+### Why the T71 guard still fails after this commit
+
+It fails because it measures the BACKGROUND, and the background depends on
+where the player happens to be looking. Running the guard's own arithmetic
+twelve times over the whole RGB cube at the failing pose, the only colours
+that pass are near-black and reddish - the rule can only be satisfied by
+making the hand nearly black. That is the rule telling on itself: it wants
+a hand nobody could see.
+
+The fix is the TEST AUTHOR's: sample the hand's own pixels with the new
+`viewmodelScreenBounds()` seam and assert green and blue differ from the
+sky by more than 12 (measured: 28..92 in green, 72..104 in blue, at every
+pose) plus the existing textured check. The numbers and the two
+alternatives are in the section above.
+
