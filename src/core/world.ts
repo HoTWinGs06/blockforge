@@ -14,7 +14,7 @@
  * depends only on its seed, so two worlds with the same seed are identical.
  */
 import { ALL_BLOCK_IDS, BlockId, SOLID_BLOCKS, TRANSPARENT_BLOCKS } from "./types.js";
-import type { Chunk, ChunkKey, WorldSnapshot } from "./types.js";
+import type { Chunk, ChunkKey, Vec3, WorldSnapshot } from "./types.js";
 import {
   CHUNK_SIZE_X,
   CHUNK_SIZE_Y,
