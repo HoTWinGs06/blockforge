@@ -11,16 +11,21 @@
  */
 
 import { BlockId, type ChunkKey, type PlayerState } from "./core/types.js";
-import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./core/constants.js";
+import { CHUNK_SIZE_Y } from "./core/constants.js";
 import { Hud, SoundBoard, WorldRenderer, chunkKeyOf } from "./render/index.js";
 
-/** The shape the render layer needs from the engine. */
+/**
+ * The shape the render layer needs from the engine.
+ *
+ * This is the renderer's own seam, NOT a change to the frozen contract. The
+ * engine's ChunkStore satisfies it as it stands.
+ */
 export interface EngineBridge {
   /** The block at a world position, or BlockId.Air if unknown. */
   blockAt(x: number, y: number, z: number): BlockId;
   /** Replace a block at a world position. */
   setBlock(x: number, y: number, z: number, id: BlockId): void;
-  /** True if the position is a solid block the player is standing against. */
+  /** True if the position is a solid block. */
   isSolid(x: number, y: number, z: number): boolean;
   /** Ask the engine to (re)build the mesh for a chunk and hand it to the renderer. */
   syncChunk(key: ChunkKey, renderer: WorldRenderer): void;
@@ -56,6 +61,7 @@ export class Game {
   private onGround = false;
 
   private readonly keys = new Set<string>();
+  private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
   private running = false;
 
@@ -119,8 +125,6 @@ export class Game {
 
   private applyLook(): void {
     const sensitivity = this.hud.sensitivity;
-    // Pointer lock drives yaw/pitch; the mouse movement is accumulated in
-    // the event handler and applied here so the look code stays testable.
     if (this.lookDelta.x !== 0 || this.lookDelta.y !== 0) {
       this.yaw -= this.lookDelta.x * sensitivity * 0.002;
       this.pitch -= this.lookDelta.y * sensitivity * 0.002;
@@ -130,8 +134,6 @@ export class Game {
       this.lookDelta.y = 0;
     }
   }
-
-  private readonly lookDelta = { x: 0, y: 0 };
 
   private applyMove(dt: number): void {
     let forward = 0;
@@ -156,10 +158,8 @@ export class Game {
     this.velocity.x = (-sin * forward + cos * strafe) * speed;
     this.velocity.z = (-cos * forward - sin * strafe) * speed;
 
-    const dx = this.velocity.x * dt;
-    const dz = this.velocity.z * dt;
-    this.moveWithCollision(dx, 0, 0);
-    this.moveWithCollision(0, 0, dz);
+    this.moveWithCollision(this.velocity.x * dt, 0, 0);
+    this.moveWithCollision(0, 0, this.velocity.z * dt);
   }
 
   private applyGravity(dt: number): void {
@@ -168,8 +168,7 @@ export class Game {
       this.velocity.y = JUMP_SPEED;
       this.onGround = false;
     }
-    const dy = this.velocity.y * dt;
-    this.moveWithCollision(0, dy, 0);
+    this.moveWithCollision(0, this.velocity.y * dt, 0);
     if (this.velocity.y < -40) {
       this.velocity.y = 0;
     }
@@ -238,8 +237,7 @@ export class Game {
       this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Air);
       this.sound.play("break");
     }
-    const key = chunkKeyOf(hit.x, hit.y, hit.z);
-    this.engine.syncChunk(key, this.renderer);
+    this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
   }
 
   /** Ray-march from the eye along the look direction and return the first solid block. */
@@ -363,5 +361,3 @@ export function mountGame(canvas: HTMLCanvasElement, engine: EngineBridge): Game
   game.start();
   return game;
 }
-
-export { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z };
