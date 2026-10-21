@@ -122,6 +122,50 @@ T76 should start from `5621eb4`, not from `feature/engine/m1`.
 
 ---
 
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+I did **not** append to `docs/VICTORIES.md` myself, and this is deliberate.
+The brief contradicts itself on that file: the VICTORY LOG section says
+"Append to docs/VICTORIES.md immediately", while its own HOW TO WORK section
+says "DO NOT EDIT docs/PROGRESS.md or docs/VICTORIES.md. The ARCHITECT owns
+those files", and the dispatcher's own docstring says the same thing. The
+dispatcher reaps a role's branch with `git merge --no-edit` and **skips the
+merge on any conflict**, so I measured it rather than guessing:
+
+```
+reap engine branch (with a VICTORIES append)  -> MERGE1=0   (clean)
+reap redteam branch (also appended VICTORIES)  -> MERGE2=0   (clean)
+a SECOND agent appending VICTORIES concurrently-> MERGE3=1   CONFLICT
+                                                 (content): Merge conflict in docs/VICTORIES.md
+```
+
+Two agents appending the same file in two worktrees conflicts, and a
+conflicting reap leaves the work unmerged on the branch — which is exactly
+the "work that stops accumulating" failure the fleet keeps warning about.
+So the entry goes here and on the board, and the architect can fold it in
+centrally. The entry:
+
+> - [2026-10-21T19:47:00Z] bugfix — the engine could not bypass the frozen
+>   blockIndex() guard. chunkIndex() was exported with no range check, so an
+>   out-of-range coordinate aliased onto a DIFFERENT block's storage slot:
+>   chunkIndex(16,0,0) was 16, the slot of block (0,0,1); chunkIndex(0,256,0)
+>   was 65536, one past the end of the Uint8Array, so the write was silently
+>   dropped; chunkIndex(-1,0,0) was -1, a negative index the typed array also
+>   ignores. It now delegates to the frozen blockIndex(), so the guard lives
+>   in ONE place and an out-of-range coordinate throws RangeError instead of
+>   aliasing — there is no unchecked variant. getBlock/setBlock keep their
+>   tolerant surface (out of range reads air, out of range writes are
+>   ignored) and now reject fractional coordinates explicitly. The verifier's
+>   original repro re-run in a fresh process against the compiled commit: all
+>   three throw RangeError, chunkIndex(1,2,3) is still 561, and an
+>   out-of-range write still changes nothing — evidence: commit d0dfceb,
+>   scripts/selfcheck/engineCheck.ts check 10 (7 new assertions), typecheck 0,
+>   lint 0 errors, 224/224 tests, coverage exit 0 (95.54% stmts / 91.86%
+>   branch against the untouched 85 floor), G6 5 seeds identical, G3 3.927
+>   ms/chunk avg / 4.238 ms p95 — M1
+
+---
+
 ## Still open in ENGINE's lane
 
 - **T47** — RED-TEAM E4: `valueNoise2` aliases coordinates past int32
