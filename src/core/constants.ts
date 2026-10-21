@@ -21,7 +21,13 @@
  */
 
 /** Blocks along X in a chunk. */
-import type { DayPhase, Season } from "./types.js";
+import type {
+  DayPhase,
+  Season,
+  ToolKind,
+  ToolSpec,
+  ToolTier,
+} from "./types.js";
 
 export const CHUNK_SIZE_X = 16;
 /** Blocks along Y in a chunk (full world height). */
@@ -211,4 +217,119 @@ export function seasonAt(tick: number): Season {
 export function dayPhaseAt(tick: number): DayPhase {
   const index = Math.floor(tick / (TICKS_PER_DAY / DAY_PHASES.length)) % DAY_PHASES.length;
   return DAY_PHASES[index] as DayPhase;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tools (frozen)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Every tool kind. */
+export const TOOL_KINDS: readonly ToolKind[] = Object.freeze([
+  "mattock",
+  "billhook",
+  "trowel",
+  "maul",
+  "sabre",
+]);
+
+/** Tool tiers, weakest first. */
+export const TOOL_TIERS: readonly ToolTier[] = Object.freeze([
+  "timber",
+  "slate",
+  "ironveil",
+  "lumencrystal",
+]);
+
+/**
+ * The tool table: one entry per kind and tier.
+ *
+ * `multiplier` scales the bare-hand break time, so a tier-1 mattock on slate
+ * is 1.0 (the same as hands) and a lumencrystal mattock is 0.25 (four times
+ * faster). `durability` is how many uses it survives.
+ *
+ * FROZEN. The crafting recipe for each of these is GAMEPLAY's; the numbers
+ * here are the contract.
+ */
+export const TOOL_SPECS: readonly ToolSpec[] = Object.freeze([
+  { id: "mattock_timber", kind: "mattock", tier: "timber", multiplier: 1.6, durability: 60 },
+  { id: "mattock_slate", kind: "mattock", tier: "slate", multiplier: 1.0, durability: 130 },
+  { id: "mattock_ironveil", kind: "mattock", tier: "ironveil", multiplier: 0.5, durability: 260 },
+  { id: "mattock_lumencrystal", kind: "mattock", tier: "lumencrystal", multiplier: 0.25, durability: 520 },
+  { id: "billhook_timber", kind: "billhook", tier: "timber", multiplier: 1.4, durability: 60 },
+  { id: "billhook_slate", kind: "billhook", tier: "slate", multiplier: 1.2, durability: 130 },
+  { id: "billhook_ironveil", kind: "billhook", tier: "ironveil", multiplier: 0.8, durability: 260 },
+  { id: "billhook_lumencrystal", kind: "billhook", tier: "lumencrystal", multiplier: 0.5, durability: 520 },
+  { id: "trowel_timber", kind: "trowel", tier: "timber", multiplier: 1.5, durability: 60 },
+  { id: "trowel_slate", kind: "trowel", tier: "slate", multiplier: 1.3, durability: 130 },
+  { id: "trowel_ironveil", kind: "trowel", tier: "ironveil", multiplier: 0.9, durability: 260 },
+  { id: "trowel_lumencrystal", kind: "trowel", tier: "lumencrystal", multiplier: 0.6, durability: 520 },
+  { id: "maul_timber", kind: "maul", tier: "timber", multiplier: 2.0, durability: 60 },
+  { id: "maul_slate", kind: "maul", tier: "slate", multiplier: 1.4, durability: 130 },
+  { id: "maul_ironveil", kind: "maul", tier: "ironveil", multiplier: 0.9, durability: 260 },
+  { id: "maul_lumencrystal", kind: "maul", tier: "lumencrystal", multiplier: 0.55, durability: 520 },
+]);
+
+/** The tool spec for an item id, if that item is a tool. */
+export function toolSpec(itemId: string): ToolSpec | undefined {
+  return TOOL_SPECS.find((spec) => spec.id === itemId);
+}
+
+/**
+ * The tool kind a block needs, or null if bare hands can break it.
+ *
+ * A block with a required kind CANNOT be broken by the wrong tool, or by
+ * hands at all. That is the "wrong tool" rule, and it is what makes tools
+ * worth crafting.
+ */
+export function requiredToolFor(id: string): ToolKind | null {
+  if (
+    id === "foliage" ||
+    id === "timber" ||
+    id === "millplank"
+  ) {
+    return "billhook";
+  }
+  if (
+    id === "regolith" ||
+    id === "loam" ||
+    id === "sand" ||
+    id === "gravel" ||
+    id === "clay"
+  ) {
+    return "trowel";
+  }
+  if (
+    id === "slate" ||
+    id === "rubble" ||
+    id === "anthracite" ||
+    id === "ironveil" ||
+    id === "gildenseam" ||
+    id === "lumencrystal" ||
+    id === "voidstone"
+  ) {
+    return "mattock";
+  }
+  if (id === "masonry" || id === "smeltforge" || id === "craftbench" || id === "crystpane") {
+    return "maul";
+  }
+  return null;
+}
+
+/** True when this tool (or bare hands) can break the block at all. */
+export function canBreak(id: string, tool: ToolSpec | null): boolean {
+  const required = requiredToolFor(id);
+  if (required === null) return true;
+  return tool !== null && tool.kind === required;
+}
+
+/**
+ * Seconds to break a block with this tool, or -1 when the tool cannot break
+ * it at all. A tool of the right kind scales the bare-hand time by its
+ * multiplier; a tool of the wrong kind is -1.
+ */
+export function breakSecondsWith(id: string, tool: ToolSpec | null): number {
+  if (!canBreak(id, tool)) return -1;
+  const bare = breakSeconds(id);
+  if (tool === null) return bare;
+  return bare * tool.multiplier;
 }

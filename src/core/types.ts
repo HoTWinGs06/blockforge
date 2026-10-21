@@ -510,3 +510,43 @@ export interface MobSnapshot {
   readonly health: number;
   readonly state: MobStateKind;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tools
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a tool is for. Original names, not the well-known ones.
+ *
+ * `mattock`  - mining: stone, rubble, ores
+ * `billhook` - felling: timber, foliage
+ * `trowel`   - digging: soil, sand, gravel
+ * `maul`     - breaking: masonry, fixtures, panes
+ * `sabre`    - a weapon, not a digging tool
+ */
+export type ToolKind = "mattock" | "billhook" | "trowel" | "maul" | "sabre";
+
+/**
+ * Tool tiers, named after the world's own materials.
+ *
+ * `timber` (wood) < `slate` (stone) < `ironveil` (iron) < `lumencrystal` (the rare one).
+ */
+export type ToolTier = "timber" | "slate" | "ironveil" | "lumencrystal";
+
+/**
+ * A concrete tool: a kind at a tier.
+ *
+ * `id` is the item id an inventory slot holds, e.g. `"mattock_slate"`.
+ * `multiplier` scales the bare-hand break time: lower is faster, 1.0 is the
+ * same as bare hands, and a tool of the WRONG kind cannot mine the block at
+ * all - see `canBreak` and `breakSecondsWith`.
+ */
+export interface ToolSpec {
+  readonly id: string;
+  readonly kind: ToolKind;
+  readonly tier: ToolTier;
+  /** Multiplier on the bare-hand break time. Lower is faster. */
+  readonly multiplier: number;
+  /** Uses before the tool breaks. */
+  readonly durability: number;
+}
