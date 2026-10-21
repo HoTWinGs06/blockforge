@@ -14,6 +14,7 @@ import * as THREE from "three";
 import type { BlockId, ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
+import { blockFromOrdinal } from "../core/world.js";
 /** How far the player can reach when breaking or placing a block. */
 export const REACH_DISTANCE = 6;
 
@@ -44,14 +45,33 @@ export function buildChunkMesh(key: ChunkKey, output: MeshOutput): ChunkMesh {
   const uvs = new Float32Array(output.uvs.length);
   const blockIds = output.blocks;
   for (let tri = 0; tri * 3 + 2 < output.indices.length; tri++) {
-    const id = blockIds[tri] as unknown as BlockId;
+    // The mesher emits the ORDINAL of the face's block kind, one per triangle.
+    // It has to be converted to a BlockId before it can be looked up in the
+    // atlas: faceUv() -> tileIndex() does TILE_ORDER.indexOf(id), and
+    // indexOf() on a NUMBER returns -1, which tileIndex() then clamps to 0.
+    // Every face therefore sampled tile 0 (Voidstone, #17151f - the darkest
+    // block in the palette), which is why the whole world rendered as one
+    // near-black mass with no distinguishable block textures.
+    const id = blockFromOrdinal(blockIds[tri] as number);
     const corners = faceUv(id);
+
+    // A quad is 4 consecutive vertices and 2 triangles, and the mesher may
+    // flip the winding. The corner of a quad that a vertex belongs to is its
+    // offset from the quad's first vertex, so derive that rather than
+    // assuming the triangle-local vertex order - assuming it gave the second
+    // triangle of every quad the wrong three corners.
+    const quadStart = (tri - (tri % 2)) * 3;
+    let quadFirst = Infinity;
+    for (let k = 0; k < 6; k++) {
+      const idx = output.indices[quadStart + k];
+      if (idx !== undefined && idx < quadFirst) quadFirst = idx;
+    }
     for (let v = 0; v < 3; v++) {
       const vi = output.indices[tri * 3 + v];
-      const c = corners[v % 4];
-      if (vi === undefined || c === undefined) {
-        continue;
-      }
+      if (vi === undefined) continue;
+      const corner = vi - quadFirst;
+      const c = corners[corner];
+      if (c === undefined) continue;
       uvs[vi * 2] = c[0];
       uvs[vi * 2 + 1] = c[1];
     }
