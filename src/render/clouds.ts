@@ -19,7 +19,16 @@
 
 import * as THREE from "three";
 import { createRng } from "../core/index.js";
-import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
+/*
+ * The deck does NOT use the world's fog distances. The world's fog fades a
+ * ground-level object out between 28 and 60 blocks, but the deck sits 60 to
+ * 90 blocks above the player's head, so the ground's fog range killed
+ * everything except the clouds directly overhead - and those are the
+ * smallest ones, so the sky looked empty. The deck has its own range,
+ * tuned to the height it actually sits at.
+ */
+const FADE_NEAR = 70;
+const FADE_FAR = 170;
 
 /** Nominal frames per second of the render loop; the game steps at 1/60 s. */
 const FRAMES_PER_SECOND = 60;
@@ -253,17 +262,17 @@ export class CloudLayer {
 
       // The cloud's own distance fade.
       //
-      // The HORIZONTAL distance, not the 3D one. The deck is 20 to 32 blocks
-      // above the player's head, so the 3D distance is always at least 20 -
-      // and using it meant every cloud started already half faded, and the
-      // ones overhead were past the far plane and fully invisible. That is
-      // why the sky had no clouds in it: the fade was killing them.
+      // The HORIZONTAL distance, not the 3D one. The deck is 60 to 90
+      // blocks above the player's head, so the 3D distance is always at
+      // least 60 - and using it meant every cloud started already half
+      // faded, and the ones overhead were past the far plane and fully
+      // invisible. That is why the sky had no clouds in it: the fade was
+      // killing them.
       //
       // The horizontal distance is what the player actually judges distance
-      // by when they look at the sky, and it is what the world's fog is
-      // tuned for.
+      // by when they look at the sky.
       const horizontal = Math.hypot(x - observer.x, z - observer.z);
-      const fog = (horizontal - FOG_NEAR) / (FOG_FAR - FOG_NEAR);
+      const fog = (horizontal - FADE_NEAR) / (FADE_FAR - FADE_NEAR);
       cloud.material.opacity = CLOUD_OPACITY * (1 - Math.min(1, Math.max(0, fog)));
     }
   }
