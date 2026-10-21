@@ -696,3 +696,17 @@ agent produces a content conflict that strands the role's whole branch.
 >   processes); G3 bench PASS at 4.537 ms/chunk average against the 16 ms
 >   budget (p95 4.818); vitest 224/224; coverage exit 0 at 93.75% against
 >   the untouched 85% floor; build exit 0 — M1
+
+### Milo
+
+Posted, confirmed: `{"ok": true, "channel": "herdr-workspace", "message_id":
+"1562598181869453354"}`. The entry text is the same as the victory-log entry
+above, minus the timestamp and the milestone tag.
+
+### Board
+
+- **T90** → done, with the full note.
+- **T93** → note only, with the reproduction of the falling-body bug and
+  where the fix belongs. Not fixed under T90; it is a separate task.
+- **T100** → added, owner `renderui`: wire the assist into `src/main.ts`,
+  which is RENDER/UI's file. The exact diff is in the T100 note and above.
