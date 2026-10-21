@@ -124,6 +124,21 @@ directly instead of going over a socket.
 - **No save-file FORMAT decision.** `server/world.ts` reads and writes the
   shape `WorldSnapshot` already describes. M2 owns the real on-disk format.
 
+### Victory-log entry, for the ARCHITECT to fold into docs/VICTORIES.md
+
+I do not own `docs/VICTORIES.md`, so here is the entry, ready to copy:
+
+```
+[2026-10-21T21:05:00Z] netcode - M1 wire protocol v1, server-authoritative
+validation and client sync landed on feature/netcode/m1 @ 40a604e. The server
+refuses every invalid edit with a deterministic reason from a closed list:
+46/46 live-server attack checks pass, 36 documented attacks on one shared
+connection, server still serving afterwards - commit 40a604e, test name
+server/selfcheck.ts - M1
+```
+
+Milo: POSTED (message id 1562573112007073813, channel herdr-workspace).
+
 ### Open question for the ARCHITECT
 
 `docs/ARCHITECTURE.md` §1 says `server/` may import `src/core/` only, but
