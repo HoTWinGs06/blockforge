@@ -161,6 +161,7 @@ export class Game {
 
     this.updateBreaking(dt);
     this.renderer.applyPlayer(this.playerState);
+    this.renderer.updateViewmodel(dt, this.horizontalSpeed(), this.onGround);
     this.updateView();
     this.updateHud();
   }
@@ -318,6 +319,8 @@ export class Game {
       this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Air);
       this.sound.play("break");
       this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
+      // The hand swings when the block breaks.
+      this.renderer.swingViewmodel();
       this.breakState = null;
     }
   }
@@ -359,6 +362,12 @@ export class Game {
     } else {
       this.renderer.hideHighlight();
     }
+    // The hand holds the selected hotbar item. The ITEMS are M3 content and
+    // the hotbar is still empty, so the hand holds rubble - but the wiring
+    // is real, and when the inventory lands the hand will pick up whatever
+    // the player has selected.
+    this.renderer.setHeldBlock(BlockId.Rubble);
+
     this.hud.update({
       targetedBlock: hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null,
       targetedPosition: hit,
@@ -374,6 +383,18 @@ export class Game {
       breakProgress: this.breakProgress(),
       breakingBlock: this.breakBlock(),
     });
+  }
+
+  /**
+   * The player's horizontal speed, in blocks per second.
+   *
+   * This drives the walk bob, so it must be the speed the player is ACTUALLY
+   * moving at, not the speed they are trying to move at. A player pushing
+   * into a wall is trying to run and is not moving, and a bob that keeps
+   * going while they are stuck against a wall looks broken.
+   */
+  private horizontalSpeed(): number {
+    return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
   /** How far through the break the player is, from 0 to 1, or null. */
@@ -519,6 +540,9 @@ export class Game {
       },
       breakProgress: () => this.breakProgress(),
       breakingBlock: () => this.breakBlock(),
+      heldBlock: () => this.renderer.heldBlock,
+      viewmodelUvBounds: () => this.renderer.viewmodelUvBounds,
+      viewmodelHasFog: () => this.renderer.viewmodelHasFog,
     };
   }
 }
@@ -534,14 +558,23 @@ export function mountGame(canvas: HTMLCanvasElement, engine: EngineBridge): Game
 /**
  * A handle on the running game, for the browser tests.
  *
- * The G2 gate and the feature guards drive the real game in a real browser,
- * and some of them need to do things a player can only do through the mouse
- * (look down at the ground, hold a button for a fixed time). Exposing the
- * instance lets those tests drive the game the way a player would, instead
- * of asserting on internals that the test does not own.
+ * THIS IS A TESTING SEAM. The invariants it exposes are the SAME ones the
+ * input handlers use, so a test drives the game the way a player does rather
+ * than reaching into private state - and so the seam cannot drift away from
+ * the real input path.
  *
- * It is read-only in spirit: the tests call the same public methods the input
- * handlers call.
+ * It is published on window only in the dev build (see src/entry.ts), so the
+ * shipped game carries no debug backdoor. It is documented in docs/API.md,
+ * so it is an interface with an owner rather than a private field the tests
+ * happen to know about.
+ *
+ * KEEP IT SMALL. It exposes the player-facing actions the tests need NOW. If
+ * a new test wants to drive something else, the question to ask is "what is
+ * the PLAYER-FACING ACTION here, and can the test perform that action
+ * through the same code path the player uses?" - because if it can, the test
+ * should be performing that action rather than adding another method here.
+ * A handle with twenty members is a second, undocumented control surface
+ * that nobody knows the state of.
  */
 export interface GameHandle {
   /** The current player state. */
@@ -558,6 +591,15 @@ export interface GameHandle {
   breakProgress(): number | null;
   /** The kind of block being broken, if any. */
   breakingBlock(): BlockId | null;
+  /** The block the player's hand is holding. */
+  heldBlock(): BlockId;
+  /**
+   * The hand's UV bounds, so a test can check that the hand shows one
+   * block's texture rather than the whole atlas.
+   */
+  viewmodelUvBounds(): { minU: number; maxU: number; minV: number; maxV: number };
+  /** Whether the hand's material has fog enabled. It must not. */
+  viewmodelHasFog(): boolean;
 }
 
 /** The handle for the game running in this page, if there is one. */

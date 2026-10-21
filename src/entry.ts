@@ -24,16 +24,25 @@ export function boot(): void {
   }
   void import("./main.js").then(({ mountGame }) => {
     const game = mountGame(canvas, new EngineWorld());
-    // Publish the handle so the browser tests can drive the game the way a
-    // player does - look down at the ground, hold the break button - rather
-    // than reaching into internals they do not own.
+
+    // A TESTING SEAM, and only in the dev build.
     //
-    // The handle comes off the Game instance, not off the module's
-    // `gameHandle` export: that export is a live binding assigned INSIDE
-    // mountGame, so destructuring it at import time captures the value
-    // BEFORE mountGame has run - which is undefined, and it stays undefined
-    // for the life of the page.
-    (window as unknown as { __blockforge?: unknown }).__blockforge = game.handle;
+    // The browser tests need to do two things a player does with the mouse:
+    // look DOWN at the ground, and HOLD a button for a fixed time. Neither is
+    // reachable in a headless browser - the game looks at the horizon by
+    // default, and pointer lock is not available. Rather than let the tests
+    // reach into private state, the game exposes the SAME public methods the
+    // input handlers call, so a test can perform the player's action rather
+    // than poke at the game's internals.
+    //
+    // GATED BEHIND import.meta.env.DEV, so the published game has no debug
+    // backdoor. The e2e job runs against the dev server (Playwright starts
+    // Vite itself), so DEV is true there and the handle exists; a production
+    // build has DEV false and no handle. That is stated in
+    // playwright.config.ts rather than left implicit.
+    if (import.meta.env.DEV) {
+      (window as unknown as { __blockforge?: unknown }).__blockforge = game.handle;
+    }
   });
 }
 

@@ -16,6 +16,7 @@ import { blockFromOrdinal } from "../core/world.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
 import { buildSky } from "./sky.js";
+import { Viewmodel } from "./viewmodel.js";
 import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
 /** How far the player can reach when breaking or placing a block. */
 export const REACH_DISTANCE = 6;
@@ -130,6 +131,25 @@ export class WorldRenderer {
   readonly renderer: THREE.WebGLRenderer;
 
   private readonly chunkGroup = new THREE.Group();
+
+  /**
+   * The player's hand.
+   *
+   * It is parented to the CAMERA, so it lives in the camera's own space:
+   * always the same distance from the eye, never clipped by terrain, and it
+   * turns with the player's head for free.
+   */
+  private readonly viewmodel = new Viewmodel();
+
+  /**
+   * A second scene that holds ONLY the viewmodel.
+   *
+   * The hand is parented to the camera, and the camera lives in this scene
+   * only while the hand is being drawn. Keeping the hand out of the world
+   * scene is what stops the chunk fog from swallowing it, and it means the
+   * hand is never clipped by terrain.
+   */
+  private readonly overlayScene = new THREE.Scene();
   private readonly meshes = new Map<string, ChunkMesh>();
   private readonly highlight: THREE.LineSegments;
 
@@ -202,6 +222,15 @@ export class WorldRenderer {
     );
     this.highlight.visible = false;
     this.scene.add(this.highlight);
+
+    // The viewmodel is a child of the CAMERA, not of the scene, and it is
+    // rendered in its own pass with the fog cleared - see render().
+    //
+    // Parenting it to the camera is what makes it a viewmodel rather than
+    // another object in the world: it lives in the camera's own space, so it
+    // is always the same distance from the eye, it turns with the player's
+    // head for free, and it can never be clipped by terrain.
+    this.camera.add(this.viewmodel.group);
   }
 
   /** Add or replace the mesh for a chunk. */
@@ -250,9 +279,88 @@ export class WorldRenderer {
     this.highlight.visible = false;
   }
 
-  /** Render one frame. */
+  /**
+   * Render one frame.
+   *
+   * TWO PASSES, and the second one is the point of the viewmodel.
+   *
+   * The first pass draws the world with its fog. The second draws the hand
+   * with the fog REMOVED. If both were drawn together, the hand - which sits
+   * about half a unit from the eye, far inside the fog's near plane - would
+   * be completely washed out in sky colour, and the player would have no
+   * visible hand at all. That is exactly the bug T71 reported.
+   */
   render(): void {
+    // Pass one: the world, with its fog.
     this.renderer.render(this.scene, this.camera);
+
+    // Pass two: the hand, in its OWN scene.
+    //
+    // The overlay scene has no fog and no world geometry in it, so the hand
+    // cannot be tinted by the distance fog and the world is not drawn twice.
+    // The camera is added to the overlay scene too, because the hand is
+    // parented to the camera - but the overlay scene does not contain the
+    // camera's PARENT, so the camera's world transform is exactly what
+    // applyPlayer() set.
+    this.overlayScene.add(this.camera);
+    this.renderer.autoClear = false;
+    this.renderer.clearDepth();
+    this.renderer.render(this.overlayScene, this.camera);
+    this.renderer.autoClear = true;
+  }
+
+  /**
+   * Update the viewmodel's motion.
+   *
+   * @param dt       seconds since the last frame
+   * @param speed    the player's horizontal speed in blocks per second
+   * @param onGround whether the player is standing on something
+   */
+  updateViewmodel(dt: number, speed: number, onGround: boolean): void {
+    this.viewmodel.update(dt, speed, onGround);
+  }
+
+  /** Set the block the player's hand is holding. */
+  setHeldBlock(id: BlockId): void {
+    this.viewmodel.setHeldBlock(id);
+  }
+
+  /**
+   * The block the player's hand is holding.
+   *
+   * This is player-facing state - what you are holding - so it is a fair
+   * thing for the browser tests to read.
+   */
+  get heldBlock(): BlockId {
+    return this.viewmodel.held;
+  }
+
+  /**
+   * The hand's UV bounds, for the browser tests.
+   *
+   * The hand must show ONE block's texture, not the whole atlas. Checking
+   * that from the outside needs the hand's UVs, and the tests cannot import
+   * the viewmodel module directly - a browser-side dynamic import of it
+   * fails to resolve three.js's bare specifier. So the renderer reads its
+   * own viewmodel and reports the numbers.
+   */
+  get viewmodelUvBounds(): { minU: number; maxU: number; minV: number; maxV: number } {
+    return this.viewmodel.uvBounds;
+  }
+
+  /**
+   * Whether the hand's material has fog enabled.
+   *
+   * It must NOT. The hand sits far inside the chunk fog's near plane, so fog
+   * would swallow it entirely.
+   */
+  get viewmodelHasFog(): boolean {
+    return this.viewmodel.hasFog;
+  }
+
+  /** Start the break swing. */
+  swingViewmodel(): void {
+    this.viewmodel.swingNow();
   }
 
   /** Resize the drawing buffer to match the canvas. */

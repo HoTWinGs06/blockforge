@@ -25,6 +25,16 @@ test.describe("visual capture", () => {
       await page.waitForTimeout(1200);
     }
 
+    // Look down a little, the way a player would when they are about to
+    // mine. The hand is in the lower right of the view, so this also brings
+    // it into frame.
+    await page.evaluate(() => {
+      const handle = (window as unknown as { __blockforge?: { look(p: number): void } })
+        .__blockforge;
+      handle?.look(-0.35);
+    });
+    await page.waitForTimeout(600);
+
     await page.screenshot({ path: "test-results/capture-game.png" });
     process.stdout.write("  wrote test-results/capture-game.png\n");
 
