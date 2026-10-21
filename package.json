@@ -1,0 +1,44 @@
+{
+  "name": "blockforge",
+  "version": "0.1.0",
+  "private": false,
+  "description": "BlockForge - an original, unofficial Minecraft-inspired voxel sandbox.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" --max-warnings 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "bench": "vitest bench --run",
+    "server": "node --experimental-strip-types server/index.ts",
+    "gen:textures": "node --experimental-strip-types scripts/gen-textures.ts",
+    "gen:sounds": "node --experimental-strip-types scripts/gen-sounds.ts",
+    "audit": "npm audit --audit-level=high"
+  },
+  "dependencies": {
+    "three": "0.170.0",
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "@types/node": "22.10.5",
+    "@types/three": "0.170.0",
+    "@types/ws": "8.5.13",
+    "@vitest/coverage-v8": "2.1.8",
+    "@vitest/ui": "2.1.8",
+    "eslint": "9.17.0",
+    "fast-check": "3.23.2",
+    "typescript": "5.7.2",
+    "typescript-eslint": "8.19.0",
+    "vite": "6.0.7",
+    "vitest": "2.1.8"
+  }
+}
