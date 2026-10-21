@@ -663,3 +663,134 @@ Full detail for every task is on the board. Summary:
   - `npm run lint`: 0 errors / 0 warnings.
   - `npm run typecheck`: clean (`tsc --noEmit` exit 0).
 - **Handoff Target:** `ENGINE` (`hermes-linux` on T26) — build `src/core/rng.ts` and the chunk generator / greedy mesher against these test specs.
+
+---
+
+## 10. G1 CLOSE-OUT — TEST AUTHOR (M1)
+
+**Agent:** TEST AUTHOR (`testauthor`, pane `w1:p4`) · **Task:** T27
+**Branch:** `feature/test-author/m1` · **Final commit:** `c419f8c`
+**Commits:** `df1b5ec` (tests) · `7fc1dd2` (docs) · `16bc2c2` (flaky-test
+fix) · `94d9ef8` (merge of the engine's fix branch) · `c419f8c` (closed
+findings converted + hardened contract covered)
+**Base:** `feature/engine/m1` @ `e29fc98`, then `feature/engine/fix-e1-e2-tunnel`
+@ `74337bb` (merged in when the engine closed the findings below).
+This repo has no `origin` remote — branches are shared through the local
+worktrees.
+
+### 10.1 The gate, read back from the tool
+
+```
+npm run coverage -> exit 0
+
+Statements   : 99.56% ( 682/685 )
+Branches     : 95.32% ( 265/278 )
+Functions    : 100%   ( 96/96  )
+Lines        : 99.52% ( 632/635 )
+```
+
+**The 85% floor was not moved.** `vitest.config.ts` is untouched; the
+thresholds are still `lines: 85, functions: 85, branches: 85, statements: 85`.
+The gate went green because the tests caught up with the code, which is the
+only way it is allowed to go green.
+
+Suite: **14 files, 206 tests — 206 passed, 0 failures, 0 expected-fail
+remaining.** `npm test` exit 0 · `npm run lint` exit 0 (0 errors) ·
+`npm run typecheck` exit 0. Verified stable across three consecutive
+`npm run coverage` runs with identical numbers.
+
+| file | stmts before | stmts after | branch before | branch after |
+|---|---|---|---|---|
+| `src/core/raycast.ts` | 0.00% | 98.11% | 0.00% | 100% |
+| `src/core/noise.ts` | 1.81% | 100% | 100% | 100% |
+| `src/core/physics.ts` | 5.68% | 100% | 0.00% | 92.86% |
+| `src/core/world.ts` | 17.47% | 99.02% | 7.77% | 96.66% |
+| `src/core/rng.ts` | 82.85% | 100% | 62.50% | 100% |
+| `src/core/meshing.ts` | 86.09% | 100% | 61.29% | 85.48% |
+| `src/core/constants.ts` | 100% | 100% | 100% | 95.65% |
+| `src/core/index.ts` | 100% | 100% | 100% | 100% |
+| `src/core/types.ts` | 100% | 100% | 100% | 100% |
+| **TOTAL** | **39.24%** | **99.56%** | **26.27%** | **95.32%** |
+
+### 10.2 Files
+
+| file | what it pins |
+|---|---|
+| `tests/raycast.test.ts` (new) | DDA hit cell, face normal points back at the ray on all six axes, placement cell is the empty neighbour, miss returns null, edge tie-break is stable, start-inside terminates, `maxDistance` bounds the search. |
+| `tests/physics.test.ts` (new) | Collision box centred on the feet, `aabbIntersects` touch-vs-overlap, falling body rests exactly on the floor top (`y === 1`), body stopped flush against a wall in all four directions, head-bump clearance, zero `dt` is a no-op, body pushed clear of a wall it started inside, and the no-overlap property over multi-block moves. |
+| `tests/noise.test.ts` (new) | `valueNoise2`/`valueNoise3` determinism, seed sensitivity, `[0, 1)` range, C2 continuity across a lattice boundary, `fbm2` determinism, range and totality. |
+| `tests/world.test.ts` (new) | `generateChunk` byte-identical for the same seed+key, different for a different seed or key, order-independent, heightmap continuous across a chunk border, world hash stable and seed-sensitive, chunk cache/unload, snapshot round-trip, block-ordinal inverses. |
+| `tests/contract_types.test.ts` (new) | The engine's hardened frozen contract: `SOLID_BLOCKS`/`TRANSPARENT_BLOCKS` are genuinely immutable (the mutators throw), the block-byte encoding is a bijection, an invalid byte is rejected rather than decoded, and a chunk key round-trips exactly. |
+| `tests/rng.test.ts` (extended) | Both `nextInt` bounds and the three `RangeError` paths, `nextUint32` covers the full uint32 range, `getState`/`setState` round-trip, `createRngFromState` restores a stream exactly, and `fork` is independent of the parent's consumption history. |
+| `tests/meshing_spec.test.ts` (extended) | Stable byte-identical vertex order, one `blocks` entry per triangle, no face for air, **no face across a section boundary**, west/east/north/south neighbour margins, greedy merge of a 4×1 slab into one quad, winding agrees with the normal. |
+| `tests/lib/purity-scan.ts` (new) | The purity scanner, built on the TypeScript AST. |
+| `tests/purity.test.ts` (rewritten) | The guard plus 23 meta-tests proving it can still fail. |
+
+### 10.3 The purity guard is no longer blind (T48 / T49 / T50 closed)
+
+The old guard was a regex sweep over comment-stripped text, and RED-TEAM
+found three holes in it. All three are closed, and the guard now has
+**meta-tests that replay every known-bad form against the scanner** — so a
+future weakening goes red before the real files do.
+
+| id | hole | fix |
+|---|---|---|
+| T1 | `readdirSync(src/core).filter(.ts)` is not recursive, so `src/core/world/`, `meshing/`, `physics/`, `raycast/` and `noise/` were never scanned — nearly all the real code. | The file list is a **recursive walk** (`listTypeScriptFiles`), and the test proves it against a real nested temp tree. |
+| T2 | `stripComments()` deleted from `//` to end of line without knowing the `//` was inside a string, so one URL on a line silently deleted a real `Math.random()` with it. | The scanner is built on the **TypeScript AST**, so comments and strings are structurally distinct. There is no comment-stripping step to get wrong. |
+| T3 | `Math . random()`, `require("three")` and `await import("three")` all slipped past the regexes. | The AST sees a call as a call whatever the spacing, and all four import spellings (`from`, `import`, `require`, dynamic `import`) are handled by one code path. |
+
+The guard also got **stricter, not looser**: it now flags DOM globals in
+type position, while correctly not flagging `{ document: 1 }`, `foo.document`,
+a local variable that shadows a DOM global name, and a string literal
+containing `"Date.now()"`.
+
+### 10.4 The three "fixed" findings — re-verified, not taken on trust
+
+The engine's first handoff (`e29fc98`) claimed E1, E2 and E5 were all
+fixed. **Measured against that tree, only E5 was.** The engine then landed
+`74337bb`, which fixed the other two — and the `it.fails` written here
+flipped RED to announce each closure, exactly as designed, and each was
+converted to a plain `it` asserting the fixed behaviour.
+
+| id | first handoff claimed | measured | how it ended |
+|---|---|---|---|
+| **E5** (vacuous hash) | fixed | **FIXED** — `hash()` mixes the seed in first, so different seeds differ even with **no chunks loaded**. | Plain `it` in `tests/world.test.ts`. Passes, and stays passing. |
+| **E1** (fbm2 NaN) | fixed | **NOT FIXED** at `e29fc98` — `fbm2` still computed `sum / norm`, and with `octaves <= 0` both are 0, so the result was `NaN`. | `it.fails` → flipped RED → **fixed** in `74337bb` (octave count clamped to ≥ 1) → now a plain `it` in `tests/noise.test.ts`, asserting the fixed behaviour over octave counts −100…100. |
+| **E2** (fork order-dependence) | fixed | **NOT FIXED** at `e29fc98` — `fork()` still derived the child from `this.state`, the parent's *current* state. | `it.fails` → flipped RED → **fixed** in `74337bb` (child derived from `this.seed`) → now a plain `it` in `tests/rng.test.ts`, plus a new test over a range of consumption histories. |
+
+The point of the exercise was never to trust the claim: had the fixes
+landed as claimed, the `it.fails` would have gone red on the spot and
+the suite would have said so.
+
+### 10.5 New finding, found and closed (T64)
+
+`moveWithCollisions` resolved collisions by testing the box at the
+**destination** only; the swept path from start to destination was never
+examined. A body that moved further than one block in a single step
+therefore passed clean through a one-block-thick wall or floor.
+
+Not theoretical: the player falls at up to `TERMINAL_VELOCITY` (60)
+blocks per second, so at any frame rate below 60 fps a falling body
+moves 2+ blocks per step and goes straight through the ground. A body
+stepping 2 blocks into a two-block wall ended up **embedded inside it** —
+worse than tunnelling.
+
+Pinned as `it.fails` with the fixed behaviour inside, then **fixed** in
+`74337bb` (the move is now split into sub-steps of at most half a
+block, so every obstacle is sampled) and converted to a plain `it`,
+together with a new property test that the body never ends up overlapping
+a solid block after a multi-block move.
+
+### 10.6 Handoff
+
+- **ENGINE (`hermes-linux`)** — `74337bb` closed T44 (E1), T45 (E2) and
+  T64 (tunnelling). All three are now pinned as plain `it` asserting the
+  fixed behaviour, so a regression in any of them goes red immediately.
+- **RED-TEAM (`opencode`)** — the `it.fails` in `tests/redteam/` for
+  T48/T49/T50 still test a frozen copy of the OLD purity logic. They
+  should be re-pointed at `tests/lib/purity-scan.ts` (or converted to
+  plain `it` asserting the current behaviour) now that the guard is
+  fixed. The same applies to the red-team's E1/E2 stubs in
+  `tests/redteam/engine-attack.test.ts`.
+- **Coordinator (`hermes-win`)** — G1 passes. G5 (lint + typecheck) is
+  clean. G6 is unaffected; `tests/determinism.test.ts` still passes.

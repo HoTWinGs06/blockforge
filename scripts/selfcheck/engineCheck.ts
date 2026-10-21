@@ -14,7 +14,9 @@
 
 import { raycast, placementCell } from "../../src/core/raycast.js";
 import { World } from "../../src/core/world.js";
-import { stepPhysics, bodyAabb, collides } from "../../src/core/physics.js";
+import { stepPhysics, bodyAabb, collides, solidWorldFromBlocks } from "../../src/core/physics.js";
+import { fbm2 } from "../../src/core/noise.js";
+import { createRng } from "../../src/core/rng.js";
 import { BlockId, SOLID_BLOCKS } from "../../src/core/types.js";
 
 let failures = 0;
@@ -150,6 +152,62 @@ const world = {
   }
   check("the same seed and chunks hash the same", loadedA.hash() === loadedB.hash());
   check("loading a chunk changes the hash", loadedA.hash() !== emptyA);
+}
+
+// 7. fbm2 must not return NaN for a non-positive octave count (E1). A NaN
+// height propagates into every block placement, so it must be impossible.
+{
+  const zero = fbm2(1234, 10.5, 20.5, 0);
+  const negative = fbm2(1234, 10.5, 20.5, -3);
+  check("fbm2 with zero octaves is not NaN", !Number.isNaN(zero), String(zero));
+  check("fbm2 with negative octaves is not NaN", !Number.isNaN(negative), String(negative));
+}
+
+// 8. fork() must depend only on (seed, label), not on the parent's history
+// (E2). Consuming the parent must not change what a child stream produces.
+{
+  const early = createRng(42);
+  const childEarly = early.fork("terrain");
+  early.nextUint32();
+  const late = createRng(42);
+  late.nextUint32();
+  const childLate = late.fork("terrain");
+
+  const a: number[] = [];
+  const b: number[] = [];
+  for (let i = 0; i < 4; i++) a.push(childEarly.nextUint32());
+  for (let i = 0; i < 4; i++) b.push(childLate.nextUint32());
+  check("a forked stream does not depend on the parent's history", a.join(",") === b.join(","));
+
+  const parent = createRng(42);
+  const first = parent.fork("terrain");
+  const second = parent.fork("terrain");
+  const c: number[] = [];
+  const d: number[] = [];
+  for (let i = 0; i < 4; i++) c.push(first.nextUint32());
+  for (let i = 0; i < 4; i++) d.push(second.nextUint32());
+  check("two forks of the same label give the same stream", c.join(",") === d.join(","));
+  check("fork does not advance the parent", parent.getState().state === 42);
+}
+
+// 9. A body moving fast must not tunnel through a one-block floor.
+{
+  const floor = solidWorldFromBlocks([
+    [0, 0, 0],
+    [1, 0, 0],
+    [2, 0, 0],
+  ]);
+  let landed = false;
+  let y = 20;
+  let velocity = { x: 0, y: 0, z: 0 };
+  for (let i = 0; i < 500 && !landed; i++) {
+    const step = stepPhysics({ x: 0.5, y, z: 0.5 }, velocity, 1, floor);
+    y = step.position.y;
+    velocity = step.velocity;
+    landed = step.onGround;
+  }
+  check("a body falling with a huge dt lands on the floor", landed, `y=${y}`);
+  check("the body did not fall through the floor", Math.abs(y - 1) < 1e-6, `y=${y}`);
 }
 
 if (failures > 0) {

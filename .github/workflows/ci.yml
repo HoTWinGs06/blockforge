@@ -93,9 +93,15 @@ jobs:
       - name: Unit tests with coverage
         # vitest.config.ts enforces the 85% floor on src/core, so this fails
         # below the threshold. That failure IS gate G1. Never lower the floor
-        # to make this green - a green CI obtained by moving the threshold is
+        # to make it green - a green CI obtained by moving the threshold is
         # not a green CI.
-        run: npm run coverage
+        #
+        # The G2 smoke test lives in tests/ and launches a real Chromium, so
+        # it needs the browser installed. Installing it here would duplicate
+        # the smoke job's download; excluding it here keeps this job about
+        # unit tests and coverage, which is what it measures. The browser gate
+        # is the smoke job below.
+        run: npm run coverage:unit
 
   gates:
     name: Determinism and performance (gates G3 and G6)
@@ -107,19 +113,12 @@ jobs:
           node-version: "24.22.0"
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Transpile the gate scripts
-        # The gate scripts import the core's TypeScript directly, and node
-        # cannot resolve its ".js" specifiers to the ".ts" files behind them.
-        # The engine ships scripts/tsconfig.build.json for exactly this.
-        run: npx tsc -p scripts/tsconfig.build.json
       - name: G6 - two fresh processes, same seed, identical world hash
-        run: node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js
+        run: npm run --silent gate:determinism
       - name: G3 - chunk generation and meshing under 16 ms average
-        run: node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js
-      - name: Engine self-check
-        run: node node_modules/.cache/blockforge-scripts/scripts/selfcheck/engineCheck.js
-      - name: Mesh self-check
-        run: node node_modules/.cache/blockforge-scripts/scripts/selfcheck/meshCheck.js
+        run: npm run --silent gate:bench
+      - name: Engine and mesh self-checks
+        run: npm run --silent gate:selfcheck
 
   smoke:
     name: Playwright smoke (gate G2)
