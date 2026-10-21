@@ -355,13 +355,136 @@ dispatcher's reap. The architect folds these in centrally.
 
 ---
 
+## T86 — the three gates were dead (TS5096), and nothing was running them
+
+**Status:** DONE. Commit `520894a` on `feature/engine/m1`, merged into
+`feature/integrated/m1` by fast-forward (exit 0) and re-verified there.
+
+### The hole
+
+The reaped render merge (889e86c) brought in f70ee87's
+`allowImportingTsExtensions: true` in the root `tsconfig.json`.
+`scripts/tsconfig.build.json` extends that root config and overrides
+`noEmit` to `false` — it has to, because it EMITS the gate scripts so node
+can run them. So the build config inherited `allowImportingTsExtensions`
+while turning `noEmit` OFF, and TypeScript 5.9.3 forbids exactly that
+combination:
+
+```
+scripts/tsconfig.build.json(3,3): error TS5096: Option 'allowImportingTsExtensions'
+can only be used when either noEmit or emitDeclarationOnly is set.
+```
+
+`gate:determinism` (G6), `gate:bench` (G3) and `gate:selfcheck` all died
+with that one error and produced NOTHING. All three exited 2.
+
+The silent part is the real story: they were separate npm scripts, so
+`npm run check` never ran them. **The fast gate said ALL GREEN while three
+real gates were not running at all.** That is the whole reason this went
+unnoticed, and it is the thing worth remembering: not the TS5096, but the
+fact that a gate outside the runner is a gate nobody runs.
+
+### The fix, two parts
+
+1. **`scripts/tsconfig.build.json`** — one line, the build config opts out of
+   the option it cannot use:
+
+   ```json
+   "allowImportingTsExtensions": false,
+   ```
+
+   Same pattern the netcode branch already applied to
+   `server/tsconfig.build.json`, so the house has one answer to this.
+
+2. **`scripts/verify.mjs`** — the three gates are now steps in the runner,
+   invoked exactly the way typecheck, lint and test already were, in BOTH the
+   fast chain and the full chain. Plus a **drift guard**: any `gate:*` script
+   in `package.json` that is not wired into the runner makes the runner
+   refuse to start and name it. The NEXT unwired gate cannot rot this way.
+
+   `gate:bench` (G3) is deliberately in the fast chain too: it is a timing
+   gate, and a timing gate that only runs on the full chain is a timing gate
+   that rots between full runs.
+
+### Verified, read back, not asserted
+
+Reproduced first, on `feature/integrated/m1` at b77f285: all three gates
+exited 2 with TS5096.
+
+After the fix, in the worktree AND re-run in the canonical repo
+`~/workspace/blockforge` on `feature/integrated/m1` @ 520894a:
+
+| gate | result |
+|---|---|
+| G6 `gate:determinism` | PASS — 5 seeds (0, 1, 12345, 2147483647, -1), every pair MATCH across fresh processes |
+| G3 `gate:bench` | PASS — average 4.456 ms/chunk (canonical repo: 5.275) under the 16 ms budget, p95 4.657 (canonical: 5.810) |
+| `gate:selfcheck` | PASS — engine self-check and mesh self-check both PASSED |
+| `npm run check` | ALL GREEN, 6/6 steps, exit 0 |
+| `npm run verify` | ALL GREEN, 8/8 steps (incl. coverage 95.9% stmts / 92.21% branch and build), exit 0 |
+
+**The regression is now caught.** With the one-line fix reverted,
+`npm run check` reports `FAIL gate:determinism` and exits 1. Before this
+change, the same tree said ALL GREEN. That is the whole point of the task,
+measured rather than asserted.
+
+**The drift guard was tested**: a fake `gate:phantom` script added to
+`package.json` makes the runner refuse to start and name it, exit 1.
+
+Lint is unchanged from baseline (7 warnings, 0 errors, exit 0) — the one new
+error I introduced (`URL` is not defined, because the scripts ESLint block
+does not declare it) was fixed by using the same `fileURLToPath` +
+`dirname` + `join` path resolution the house already uses in
+`scripts/determinism/check.ts`.
+
+### What this does NOT cover
+
+- `src/core/` and `tests/` were not touched. No name in the frozen contract
+  changed.
+- The gates are now in the runner, but `npm run gate:*` still works exactly
+  as before, for anyone who wants to run one in isolation.
+- The G3 timing numbers move with host load (4.456 ms in the worktree,
+  5.275 ms in the canonical repo, same commit, both well under 16 ms). The
+  budget has room, but do not read a 1 ms difference as a regression.
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+Same reasoning as T46's and T47's entries above: the entry lives here and on
+the board rather than in `docs/VICTORIES.md`, because the brief contradicts
+itself about that file (the VICTORY LOG section says append it, the HOW TO
+WORK section says the architect owns it and role agents must not touch it),
+and a concurrent append from a second agent produces a CONTENT CONFLICT that
+strands the role's whole branch on the dispatcher's reap. The architect folds
+these in centrally.
+
+> - [2026-10-21T21:33:00Z] bugfix — three gates were dead and, worse, dead
+>   SILENTLY. The reaped render merge (889e86c) brought in f70ee87's
+>   `allowImportingTsExtensions: true` in the root tsconfig.json;
+>   `scripts/tsconfig.build.json` extends that config and overrides `noEmit`
+>   to `false` so it can EMIT the gate scripts for node to run, and
+>   TypeScript 5.9.3 forbids exactly that combination (TS5096). So
+>   `gate:determinism` (G6), `gate:bench` (G3) and `gate:selfcheck` all died
+>   with the same error and produced nothing — and because they were
+>   separate npm scripts, `npm run check` never ran them and still said ALL
+>   GREEN. The gates were not failing: they were never RUNNING. Fixed in two
+>   parts: the build config now sets `allowImportingTsExtensions: false`
+>   (the option it cannot use, the same fix the netcode branch already
+>   applied to server/tsconfig.build.json), and `scripts/verify.mjs` now
+>   runs all three gates as steps alongside typecheck, lint and test, in
+>   BOTH the fast and the full chain, with a drift guard that refuses to
+>   start if any `gate:*` script in package.json is not wired in. Evidence:
+>   commit 520894a, merged into feature/integrated/m1 and re-verified there
+>   — G6 PASS 5 seeds (0, 1, 12345, 2147483647, -1) every pair MATCH across
+>   fresh processes, G3 PASS average 5.275 ms/chunk against the 16 ms budget
+>   (p95 5.810), engine + mesh self-checks PASSED, `npm run check` ALL GREEN
+>   6/6 exit 0, `npm run verify` ALL GREEN 8/8 exit 0. The regression is now
+>   CAUGHT: with the one-line fix reverted, `npm run check` reports FAIL
+>   gate:determinism and exits 1, where the same tree previously said ALL
+>   GREEN — M1
+
+---
+
 ## Still open in ENGINE's lane
 
-- **T86** — the G3/G6/selfcheck gate scripts die with TS5096 because
-  `scripts/tsconfig.build.json` sets `noEmit: false` while the root
-  `tsconfig.json` sets `allowImportingTsExtensions: true`. I built and ran
-  all three gates with a one-off
-  `npx tsc -p scripts/tsconfig.build.json --allowImportingTsExtensions false`
-  override and they all PASS, so the only thing broken is the committed
-  command. A one-line fix in `scripts/tsconfig.build.json`.
 - **T76** — water physics, preserved above at `5621eb4`.
