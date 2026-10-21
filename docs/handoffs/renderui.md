@@ -248,3 +248,172 @@ sky by more than 12 (measured: 28..92 in green, 72..104 in blue, at every
 pose) plus the existing textured check. The numbers and the two
 alternatives are in the section above.
 
+---
+
+## T100 — the engine's jump assist is wired into main.ts
+
+**Status:** DONE. Commit `026458b` on `feature/render/m1` (merge `c13dbe3`
+brings the engine's `d8b60e3` forward).
+
+### What was wrong
+
+`src/main.ts` jumped like this:
+
+```ts
+if (this.keys.has("Space") && this.onGround) {
+  this.velocity = { ...this.velocity, y: JUMP_SPEED };
+  this.onGround = false;
+}
+```
+
+Two presses were **dropped** by that condition, and they are the whole of
+the operator's report "the jump does not work in all areas":
+
+- a press a fraction of a second too **LATE** — the body had already left
+  the ground, so `onGround` was false and the press was thrown away;
+- a press a fraction of a second too **EARLY** — the body had not landed
+  yet, so the press was thrown away too.
+
+T90 (engine, `d8b60e3`) built the fix in `src/core/physics.ts`: coyote time
+and jump buffering, counted in ticks, pure, with the state carried from
+tick to tick. The assist was **not wired into the game**, because
+`src/main.ts` is RENDER/UI's file and the engine did not touch it. That
+wiring is this commit.
+
+### What the wiring is
+
+```ts
+const assist = stepJumpAssist(this.jumpState, {
+  jumpHeld: this.keys.has("Space"),
+  onGround: this.onGround,
+});
+this.jumpState = assist.state;
+if (assist.jumped) {
+  this.velocity = { ...this.velocity, y: JUMP_SPEED };
+  this.onGround = false;
+}
+```
+
+The assist decides **WHEN**; this file applies the velocity, which is what
+its contract says ("The assist only decides WHEN. The caller applies the
+jump velocity"). The assist was **not** re-implemented here — a private
+copy of the jump logic in the render layer is exactly what caused T63.
+
+**Tick order.** The assist is stepped once per tick, *before* `stepPhysics`,
+and reads `this.onGround` — the ground state at the **end of the previous
+tick**, which is precisely what `JumpInput.onGround` is documented to be.
+The assist's own `JumpState` carries the coyote grace and the buffered press
+between ticks, so nothing is needed from this file beyond feeding the input.
+
+### One real defect found while wiring it
+
+The assist fires on the **rising edge** of the key. A key stuck **down** is
+therefore fatal: `heldLastTick` stays true, the edge never re-fires, and
+the player cannot jump at all. A `keyup` is not delivered when the window
+loses focus, so a Space held at that moment stayed in `this.keys` forever.
+The `blur` handler now clears the held keys as well — the same handler
+already released the break button. Without this the wiring would have
+introduced a bug the old code did not have.
+
+### Flag for the ENGINE / ARCHITECT (not a blocker, and not fixed here)
+
+The assist's rising-edge semantics mean a **held** jump key does not bounce
+the player. The old code was level-triggered, so an operator who held Space
+got repeated jumps; after this wiring a held key gives **one** jump, and a
+player holding Space through a landing gets no jump on that landing. That is
+the engine's frozen contract and the test author will pin it, so the render
+layer wires it as frozen and does **not** fake a press. If hold-to-hop must
+survive, the rule belongs in `stepJumpAssist` (an engine change, e.g.
+re-press on landing while held), not in `src/main.ts`.
+
+### Measured, not assumed
+
+Four probes against the **real compiled** `src/core/physics.ts`, replaying
+exactly the call sequence `main.ts` performs:
+
+| probe | result |
+|---|---|
+| a press on the ground jumps | PASS — `vy` 7.53, 1 jump |
+| a **held** key does not bounce the player | PASS — 1 jump in 120 ticks |
+| **COYOTE**: a press 1 tick after leaving the ground still jumps | PASS — 0 → 1 jumps |
+| **BUFFER**: a press 3 ticks before the landing fires on the landing | PASS — 0 jumps at the press, 1 at the landing |
+
+And in a **real headless browser** against the real game (a tap, not a
+hold, on `Space`):
+
+```
+BEFORE  {"position":{"x":0.5,"y":64,"z":0.5},"velocity":{"x":0,"y":0,"z":0},"onGround":true}
+DURING  {"position":{"x":0.5,"y":64.353,"z":0.5},"velocity":{"x":0,"y":6.6,"z":0},"onGround":false}
+PEAK_Y  65.077   GROUND_Y 64
+CONSOLE_PROBLEMS  []
+```
+
+The player rose from y=64 to y=65.08 and the console stream was clean —
+zero errors and zero warnings after the repo's own GL-driver filter (the
+same filter `e2e/smoke.spec.ts` uses).
+
+### Verified on the committed tree
+
+- `npm run typecheck` — exit 0
+- `npm run lint` — exit 0, 0 errors (7 pre-existing `no-console` warnings
+  in `scripts/verify.mjs`)
+- `npm run check` — **ALL GREEN 6/6**, exit 0 (typecheck, lint, test,
+  gate:determinism, gate:bench, gate:selfcheck)
+- `npm run coverage` — exit 0, 93.75% stmts / 87.32% branch against the
+  **untouched** 85% floor
+- `npm run build` — exit 0
+- Browser probe — 1 passed
+
+### For the TEST AUTHOR (G1 / G2)
+
+No new handle member is needed and **no file under `tests/` or `e2e/` was
+touched by me**. The hooks are the ones that already exist:
+
+- `window.__blockforge.state()` → `{ position, velocity, yaw, pitch,
+  onGround, health, hunger }`. A jump is observable as `velocity.y > 0`
+  and then `position.y` rising.
+- The game's own input path is the one to drive: `page.keyboard.down("Space")`
+  then `page.keyboard.up("Space")`. The assist fires on the **rising edge**,
+  so a **tap** is the right gesture; a held key does not bounce.
+- `stepJumpAssist(state, input)` → `{ state, jumped }` is exported from
+  `src/core/physics.ts` (and re-exported by `src/core/index.ts`), so it can
+  be pinned directly in a vitest file without touching the browser.
+
+The behaviour contract is the engine's (T90's note on the board): nine
+jump-assist behaviours and three step-up behaviours, all listed there.
+
+**One thing the TEST AUTHOR should know:** `src/core/physics.ts` is at
+74.26% statements because the new assist has no vitest coverage yet — the
+engine's 18 assertions live in `scripts/selfcheck/engineCheck.ts`, which is
+ENGINE's file. `tests/` is the TEST AUTHOR's, so the vitest coverage for
+`stepJumpAssist` is theirs to add.
+
+### Files changed
+
+- `src/main.ts` — the wiring (the assist call), the `JumpState` field, and
+  the `blur` handler clearing the held keys.
+
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+- [2026-10-21T23:58:00Z] feature — the engine's jump assist is wired into
+  the game, so the operator's "the jump does not work in all areas" is
+  closed. T90 (engine, `d8b60e3`) built coyote time and jump buffering in
+  `src/core/physics.ts` — a press a fraction of a second too late (the body
+  had already left the ground) or too early (the body had not landed yet)
+  used to be dropped by `src/main.ts`'s `keys.has("Space") && onGround`.
+  `src/main.ts` now steps the engine's `stepJumpAssist` once per tick and
+  applies the velocity the assist asks for; the assist was not re-implemented
+  in the render layer, which is what caused T63. The wiring also found a
+  real defect: the assist fires on the **rising edge**, so a key stuck down
+  (a `keyup` is not delivered when the window loses focus) left the player
+  unable to jump at all — the `blur` handler now clears the held keys.
+  Measured against the real compiled module with the exact call sequence
+  `main.ts` performs: a ground press jumps (`vy` 7.53), a held key does not
+  bounce (1 jump in 120 ticks), a press 1 tick after leaving the ground
+  still jumps (coyote), and a press 3 ticks before the landing fires on the
+  landing (buffer) — 4/4 probes pass. In a real headless browser, a tap on
+  Space gives `velocity.y` 6.6 and the player rises from y=64 to y=65.08
+  with zero console errors and zero console warnings. Evidence: commit
+  `026458b` on `feature/render/m1`; `npm run check` ALL GREEN 6/6 exit 0;
+  `npm run coverage` exit 0 at 93.75% against the untouched 85% floor;
+  `npm run build` exit 0 — M1
