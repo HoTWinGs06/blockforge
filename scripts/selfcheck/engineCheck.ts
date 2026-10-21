@@ -22,7 +22,17 @@ import {
   setBlock,
   terrainHeight,
 } from "../../src/core/world.js";
-import { stepPhysics, bodyAabb, collides, solidWorldFromBlocks } from "../../src/core/physics.js";
+import {
+  stepPhysics,
+  bodyAabb,
+  collides,
+  solidWorldFromBlocks,
+  moveWithCollisions,
+  createJumpState,
+  stepJumpAssist,
+  COYOTE_TICKS,
+  JUMP_BUFFER_TICKS,
+} from "../../src/core/physics.js";
 import { fbm2, valueNoise2, valueNoise3 } from "../../src/core/noise.js";
 import { createRng } from "../../src/core/rng.js";
 import { BlockId, SOLID_BLOCKS } from "../../src/core/types.js";
@@ -374,6 +384,200 @@ const world = {
     if (valueNoise2(1234, i, 0) === valueNoise2(1234, i + 1, 0)) collisions++;
   }
   check("neighbouring lattice points still differ", collisions === 0, `${collisions} collisions`);
+}
+
+// 12. THE JUMP ASSIST (T90). Coyote time and jump buffering.
+//
+// The operator reported "the jump does not work in all areas". The two
+// causes are a press that is a fraction of a second too late (the body has
+// already left the ground) and a press that is a fraction of a second too
+// early (the body has not landed yet). The assist forgives both, and it
+// forgives them in TICKS so the behaviour does not depend on the frame
+// rate.
+{
+  // A press on the ground jumps at once.
+  {
+    const r = stepJumpAssist(createJumpState(), { jumpHeld: true, onGround: true });
+    check("a press on the ground jumps at once", r.jumped);
+  }
+
+  // A HELD key is not a new press: only the rising edge counts, so
+  // holding the key does not bounce the player.
+  {
+    let state = createJumpState();
+    state = stepJumpAssist(state, { jumpHeld: true, onGround: true }).state;
+    const second = stepJumpAssist(state, { jumpHeld: true, onGround: true });
+    check("holding the key does not jump again", !second.jumped);
+  }
+
+  // COYOTE TIME: a press just after the body left the ground still jumps.
+  {
+    let state = createJumpState();
+    state = stepJumpAssist(state, { jumpHeld: false, onGround: true }).state;
+    const r = stepJumpAssist(state, { jumpHeld: true, onGround: false });
+    check("a press just after leaving the ground still jumps", r.jumped);
+  }
+
+  // The coyote window is exactly COYOTE_TICKS long, and it does expire.
+  {
+    const jumpsAfter = (ticks: number): boolean => {
+      let state = createJumpState();
+      state = stepJumpAssist(state, { jumpHeld: false, onGround: true }).state;
+      for (let i = 0; i < ticks; i++) {
+        state = stepJumpAssist(state, { jumpHeld: false, onGround: false }).state;
+      }
+      return stepJumpAssist(state, { jumpHeld: true, onGround: false }).jumped;
+    };
+    let lastGrace = -1;
+    for (let i = 0; i < COYOTE_TICKS + 3; i++) {
+      if (jumpsAfter(i)) lastGrace = i;
+    }
+    check(
+      `the coyote window is exactly ${COYOTE_TICKS} ticks`,
+      lastGrace === COYOTE_TICKS - 1,
+      `last grace tick ${lastGrace}`,
+    );
+    check("a press long after leaving the ground does not jump", !jumpsAfter(COYOTE_TICKS + 2));
+  }
+
+  // JUMP BUFFERING: a press too early is remembered and fires on landing.
+  {
+    let state = createJumpState();
+    state = stepJumpAssist(state, { jumpHeld: false, onGround: true }).state;
+    for (let i = 0; i < COYOTE_TICKS + 2; i++) {
+      state = stepJumpAssist(state, { jumpHeld: false, onGround: false }).state;
+    }
+    const early = stepJumpAssist(state, { jumpHeld: true, onGround: false });
+    check("a press too early does not jump immediately", !early.jumped);
+    const landed = stepJumpAssist(early.state, { jumpHeld: false, onGround: true });
+    check("the remembered press fires on the landing", landed.jumped);
+  }
+
+  // The buffer expires: a press long before the landing is forgotten.
+  {
+    let state = createJumpState();
+    state = stepJumpAssist(state, { jumpHeld: false, onGround: true }).state;
+    for (let i = 0; i < COYOTE_TICKS + 2; i++) {
+      state = stepJumpAssist(state, { jumpHeld: false, onGround: false }).state;
+    }
+    state = stepJumpAssist(state, { jumpHeld: true, onGround: false }).state;
+    for (let i = 0; i < JUMP_BUFFER_TICKS + 2; i++) {
+      state = stepJumpAssist(state, { jumpHeld: false, onGround: false }).state;
+    }
+    const landed = stepJumpAssist(state, { jumpHeld: false, onGround: true });
+    check("a press long before the landing is forgotten", !landed.jumped);
+  }
+
+  // A ground jump spends the grace, so it cannot be followed by a second
+  // jump out of the same landing.
+  {
+    const state = createJumpState();
+    const first = stepJumpAssist(state, { jumpHeld: true, onGround: true });
+    check("the ground jump fires", first.jumped);
+    const airborne = stepJumpAssist(first.state, { jumpHeld: false, onGround: false }).state;
+    const again = stepJumpAssist(airborne, { jumpHeld: true, onGround: false });
+    check("a ground jump does not leave grace behind it", !again.jumped);
+  }
+
+  // The assist is PURE: the same input history always gives the same jump.
+  {
+    const run = (): string => {
+      let state = createJumpState();
+      const out: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        const r = stepJumpAssist(state, { jumpHeld: i === 3 || i === 20, onGround: i % 7 === 0 });
+        state = r.state;
+        out.push(r.jumped ? "1" : "0");
+      }
+      return out.join("");
+    };
+    check("the same input history gives the same jump", run() === run());
+  }
+}
+
+// 13. THE HARDENED STEP-UP (T90). The step-up must walk a ledge up, and
+// must NOT be a way to climb a wall.
+{
+  // A REAL one-block ledge: the ground's top is y=1 and the step's top y=2.
+  const ledge = solidWorldFromBlocks([
+    [0, 0, 0],
+    [1, 1, 0],
+  ]);
+  {
+    const r = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 0.5, y: 0, z: 0 },
+      ledge,
+    );
+    check("a one-block ledge is walked up", Math.abs(r.position.y - 2) < 1e-9, `y=${r.position.y}`);
+  }
+
+  // A RISING body does not step up. Without this a jump into a wall is a
+  // wall climb, which is the one rule the step-up must not break.
+  {
+    const r = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 3, y: 8, z: 0 },
+      { x: 0.5, y: 0, z: 0 },
+      ledge,
+    );
+    check("a rising body does not step up", Math.abs(r.position.y - 1) < 1e-9, `y=${r.position.y}`);
+  }
+
+  // ONE move raises the body at most STEP_HEIGHT, however many axes step
+  // up: a diagonal staircase must not be climbed two blocks at a time.
+  {
+    const stair: Array<[number, number, number]> = [];
+    for (let i = 0; i < 4; i++) {
+      stair.push([i, i, 0]);
+      stair.push([i, i, 1]);
+    }
+    const r = moveWithCollisions(
+      { x: 0.5, y: 1, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 0.5, y: 0, z: 0.5 },
+      solidWorldFromBlocks(stair),
+    );
+    check(
+      "one move never raises the body by more than STEP_HEIGHT",
+      r.position.y - 1 <= 1 + 1e-9,
+      `rise=${r.position.y - 1}`,
+    );
+  }
+
+  // The ground probe is a thin slab under the feet, not the whole body:
+  // a body whose HEAD is inside a block is not standing on that block, so
+  // it cannot step up off it.
+  {
+    const world = solidWorldFromBlocks([
+      [0, 0, 0],
+      [0, 3, 0],
+      [1, 1, 0],
+    ]);
+    const r = moveWithCollisions(
+      { x: 0.5, y: 1.2, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 0.5, y: 0, z: 0 },
+      world,
+    );
+    check(
+      "a body whose head is in a block does not step up off it",
+      Math.abs(r.position.y - 1.2) < 1e-9,
+      `y=${r.position.y}`,
+    );
+  }
+
+  // A body in mid-air with nothing under it still does not step up.
+  {
+    const r = moveWithCollisions(
+      { x: 0.5, y: 1.2, z: 0.5 },
+      { x: 0, y: 0, z: 0 },
+      { x: 0.5, y: 0, z: 0 },
+      solidWorldFromBlocks([[1, 1, 0]]),
+    );
+    check("a body in mid-air does not step up", Math.abs(r.position.y - 1.2) < 1e-9, `y=${r.position.y}`);
+  }
 }
 
 if (failures > 0) {
