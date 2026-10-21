@@ -451,3 +451,159 @@ any process.
 ```
 
 Posted to the Milo butler server — message id `1562544121019637823`.
+
+---
+
+## T83 — M3/GAMEPLAY — survival rules: health, hunger, damage, death, respawn
+
+**Commit:** `981ccb9fb3b9ce2000d28069489d6e27160f8c62` on `feature/gameplay/m1`.
+
+### The operator's complaint
+
+> "and shit" — the rest of the survival loop. Health and hunger EXIST and
+> are on screen (the HUD shows HEALTH 20 and HUNGER 20) but they are
+> static: nothing drains them, nothing damages you, and there is no death.
+> That is a HUD showing two decorative numbers, which is worse than not
+> showing them.
+
+**That is now false.** The two numbers move, they mean something, and the
+player can die.
+
+### What landed
+
+| File | What |
+|---|---|
+| `src/gameplay/survival.ts` (new) | The RULES, pure and tick-driven. `SurvivalState`, `advanceSurvival`, `damageSurvival`, `fallDamage`, `eatSurvival`, `respawnSurvival`, plus the tables: `FOOD`, `MOB_DAMAGE`, `ACTIVITY_DRAIN`. |
+| `src/gameplay/session.ts` | The session now OWNS the survival state. `session.health`, `session.hunger`, `session.dead`, `session.damage()`, `session.hurtByMob()`, `session.eat()`, `session.respawn()`. `update()` takes the activity and whether the player is on the ground, and advances the rules on the same tick that ages the dropped items. |
+| `src/gameplay/drops.ts` | The tree canopy now drops a **wildfig** instead of nothing. That is the player's supply of food until the mobs land. |
+| `src/gameplay/index.ts` | The new API, exported. |
+| `src/main.ts` | The shell reads the real numbers (`this.session.health` / `.hunger`) into the HUD and the `PlayerState`; **G** eats; death respawns the player. |
+| `scripts/selfcheck/survivalCheck.ts` (new) | 61 assertions, wired into `npm run gate:selfcheck`. |
+
+### The rules, and the numbers behind them
+
+| Rule | Number | Where |
+|---|---|---|
+| Health / hunger scale | 0..20 both | `MAX_HEALTH`, `MAX_HUNGER` — the HUD already drew against a maximum of 20. |
+| Hunger drain | 1 point per 600 ticks (30 s) | `HUNGER_TICKS_PER_POINT` |
+| Drain with activity | idle ×1, moving ×2, sprinting ×3 | `ACTIVITY_DRAIN` |
+| Starvation | 1 damage per 100 ticks (5 s) at zero hunger | `STARVATION_TICKS_PER_DAMAGE` |
+| Regeneration | 1 health per 600 ticks at hunger ≥ 18 | `REGEN_TICKS`, `REGEN_HUNGER` |
+| Fall damage | free up to 3 blocks, then 1 per block | `SAFE_FALL_BLOCKS`, `fallDamage()` |
+| Mob damage | lurker 3, snarler 4, the passive kinds 0 | `MOB_DAMAGE` |
+| Food | wildfig = 3 hunger | `FOOD` |
+
+### THE DETERMINISM (this was the board's hard requirement)
+
+**The drain is driven by the TICK COUNTER, not by the wall clock.** The
+session's tick advances in fixed fifths of a second, and the survival
+rules are advanced one tick at a time inside that loop — so the hunger a
+player has after N ticks is a pure function of N and the activity. There
+is no `Date.now()`, no `performance.now()` and no `Math.random()` anywhere
+in the survival code.
+
+The self-check PROVES it rather than asserting it: `advanceSurvival(state,
+100, "moving")` and one hundred calls of `advanceSurvival(state, 1,
+"moving")` give the SAME hunger and the SAME health. The same ticks, split
+any way, always give the same answer.
+
+**Damage is not random at all.** It is a table — fall damage is a
+function of the drop distance, mob damage is a table, starvation is a
+tick count. So there is no RNG to seed here, and the same world replays
+identically. (When T79 lands the mob AI, if it wants a random bite it
+must roll the seeded PRNG, never `Math.random()`.)
+
+### The parts the next agent needs to know
+
+1. **THE SPAWN DROP IS NOT A FALL.** The player starts in the air at y=90
+   and lands on the terrain. That landing is not something they did, so
+   it does not hurt. The first landing ARMS the rule (`fallArmed`), and
+   every fall after it counts. Without this the player would take ~20
+   damage on the first frame and die before they could move. The
+   self-check pins both halves: the spawn drop is free, and a real fall
+   after it hurts.
+
+2. **DEATH DOES NOT RESET THE WORLD.** `session.respawn()` puts the
+   player back together — health 20, hunger 20, not dead — and touches
+   nothing else. The blocks the player broke stay broken, the items they
+   dropped stay where they fell, and the pack they were carrying is
+   still in the pack. The world surviving the death is the point.
+
+3. **THE FOOD COMES FROM THE CANOPY.** `dropFor(Foliage, billhook)` now
+   returns one wildfig. The wrong-tool rule still holds on it (a mattock
+   gets nothing), so the fig is harvested with the same billhook you fell
+   the tree with. When the mobs land, their meat goes in the `FOOD` table
+   and their drops can be added the same way.
+
+4. **THE EAT KEY IS `G`.** It was free (F is break, R is place, the
+   digits pick a slot). RENDER/UI owns the HUD, so the hint line in the
+   pause menu does NOT mention G yet — that is a one-line change in
+   `src/render/hud.ts` and it belongs to the render role, not to this
+   one. The key binding itself is in `src/main.ts` and is mine.
+
+5. **THE HUD ALREADY HAD THE BARS.** `src/render/hud.ts` was NOT touched:
+   it draws whatever `health` and `hunger` it is given, against a maximum
+   of 20, and it now gets real numbers. Nothing in the render layer
+   needed to change for this task, which is why there is no conflict with
+   T84.
+
+6. **THE SHELL OWNS THE RESPAWN POSITION.** The session owns the health
+   and the hunger; the shell owns where the player is, so `checkDeath()`
+   in `src/main.ts` moves the player back to `SPAWN_POSITION` (the same
+   y=90 the game starts at) and calls `session.respawn()`.
+
+### What I verified, and what I read back
+
+- `npm run typecheck` → **exit 0**.
+- `npm run lint` → **exit 0, 0 errors** (the 7 warnings are the
+  pre-existing `no-console` ones in `scripts/verify.mjs`).
+- `npx vitest run` → **exit 0, 224 tests passing in 16 files**.
+- `npm run build` → **exit 0**, `✓ built in 541ms`.
+- `npm run coverage` → **the same 76.59% as before my change** (I
+  stashed my work and measured it: 76.59% lines both ways, 75.44% vs
+  75.54% statements). The G1 floor is RED and it is NOT this task: the
+  four new `src/core/crafting` files from T81 have no vitest tests yet,
+  which is T95 for the TEST AUTHOR. My files are in `src/gameplay/`,
+  which the coverage config does not count, so this task neither helps
+  nor hurts that number.
+- **A NEW 61-assertion self-check**
+  (`scripts/selfcheck/survivalCheck.ts`), wired into
+  `npm run gate:selfcheck`, **all 61 passing, exit 0**. It covers: the
+  drain rate and the three activity multipliers; that splitting the ticks
+  changes nothing; that hunger stops at zero and starvation then costs
+  health; that a fed player heals but never past the maximum; the fall
+  rule; the real session draining over ten minutes of game time; the
+  spawn drop being free and a real fall hurting; a mob's bite landing
+  with the table's number and a grazer not biting; death, the pack
+  surviving it, and the respawn; food going into the belly and being
+  eaten from the pack; a full player refusing a meal and keeping it; and
+  the whole loop — break the canopy, collect the fig, starve to death,
+  respawn, and eat.
+- All five earlier self-checks still pass: engine 20/20, mesh 8/8,
+  crafting 51/51, drops 72/72, tools 67/67.
+- I did NOT touch `tests/` — that is the TEST AUTHOR's. The behaviours
+  worth pinning there are listed above, and the exact API is in
+  `src/gameplay/survival.ts`.
+
+### ONE PRE-EXISTING FAILURE, NOT MINE
+
+`npm run gate:selfcheck`, `gate:bench` and `gate:determinism` still die
+at the `tsc` step with **TS5096** on `scripts/tsconfig.build.json` (it
+extends the root tsconfig, which sets `allowImportingTsExtensions:true`,
+and the script config sets `noEmit:false` to emit JS — the two conflict).
+This is T86, the engine's file, and it is on the branch already. I
+verified every self-check by running them the way T86's note says:
+`npx tsc -p scripts/tsconfig.build.json --allowImportingTsExtensions false`,
+then `node node_modules/.cache/blockforge-scripts/scripts/selfcheck/*.js`.
+All six pass that way. I did not touch the engine's config file.
+
+### For whoever picks up the next piece
+
+- **T79 (mobs)** is the natural next task and it now has a seam to call:
+  `session.hurtByMob(kind)` applies the table's damage. The mob's own
+  health, AI and drops are still to be built.
+- **T84 (the crafting UI)** wants a recipe book. The survival side does
+  not add any recipe — the food is a drop, not a craft — so the recipe
+  table is unchanged by this task.
+- The render side has ONE line to add: the pause-menu hint should say
+  that **G** eats.
