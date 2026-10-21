@@ -274,6 +274,54 @@ it — both need no code changes.
 The canonical Linux repo currently has **no git remote** (`git remote -v` is
 empty), which is expected until the repo exists.
 
+## 1f. The M1 prototype — the first playable build
+
+**Branch:** `feature/architect/m1-integration` @ `05576ec` on the canonical repo.
+It merges `feature/engine/m1` + `feature/hermes-win/g2` + the architect's
+T40–T43 contract hardening. The render branch **on its own did not build** —
+`engineBridge.ts` could not resolve `../engine/index.js`, because the engine
+had never been merged in. This merge is what makes the app real.
+
+**Gates, all read back, not assumed:**
+
+| | |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run build` | exit 0 |
+| `npx playwright test` (G2) | **4 passed (4)** — including *loads the game with no console errors or warnings* and *keeps the console clean across the whole run* |
+
+**What works, verified by driving it:** the world generates; the camera is
+first person; `WASD` moves; `F` breaks and `R` places a block; the raycast
+reports the targeted block with world coordinates (`Rubble -2, 68, -9`, then
+`Clay -2, 68, -9` once the break changed the target); the pause menu renders;
+the originality disclaimer is in the HUD.
+
+**Run it:**
+
+```sh
+git clone hermes:~/workspace/blockforge      # or use an existing clone
+git checkout feature/architect/m1-integration
+npm ci
+npm run dev            # http://localhost:5173
+```
+
+Controls are in the README. Screenshots of the prototype are in
+`C:/Users/JOEL/workspace/blockforge-play/prototype-1..5.png` on the Windows box.
+
+**Known visual issue (T53, owner RENDER/UI): the world is far too dark.** The
+terrain is legible and per-face shading works — faces at different angles get
+different tones, so the directional light is live — but block faces read as
+almost black. Either the procedural texture atlas is far too dark, the
+ambient/hemisphere light is too weak against the directional, or the material
+is not lit as intended. This is the gap between "technically runs" and
+"pleasant to play", and it should be fixed before the renderer is built on
+further.
+
+**Not in M1 yet:** inventory and hotbar contents (slots are empty), crafting,
+mobs, hunger, biomes, caves, trees, water, day/night, save/load,
+multiplayer, and the settings menu beyond the pause overlay.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |
