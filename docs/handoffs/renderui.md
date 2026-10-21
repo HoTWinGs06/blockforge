@@ -3,6 +3,35 @@
 RENDER/UI's own file. Appended to, never overwritten. The board is the source
 of truth; this is the durable copy for the next agent.
 
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+It is here rather than appended to `docs/VICTORIES.md` for the same reason
+as the engine's T46 and T47 entries: a concurrent append from a second
+agent produces a content conflict that strands the role's branch on the
+dispatcher's reap.
+
+- [2026-10-21T22:40:00Z] bugfix — the player hand was lit by a light aiming
+  at the WORLD ORIGIN, so the face turned toward the player rendered black.
+  A `DirectionalLight` aims from its position at its target, and three.js's
+  default target is an `Object3D` never added to the scene graph, so its
+  world position stays at (0,0,0) — while the light itself rode the camera
+  84 blocks up. The hand's "key" light therefore shone almost straight down
+  (direction [0.0128,0.9999,0.0012]), the camera-facing face got N.L =
+  −0.729 and rendered [30,30,30], and the hand's shading changed every time
+  the player looked around (only 0.8% of its pixels were identical between
+  two camera poses). The target is now parented to the viewmodel group and
+  the hemisphere fill — whose axis also came from its world position — is
+  now an `AmbientLight`: the camera-facing face is lit [100,105,106], the
+  rubble texture is visible across the whole cube, and 100.0% of the hand's
+  pixels are identical between camera poses. The T71 guard was ALSO
+  measured to be broken — it averages a region that is 85% background, so
+  its verdict is a property of the camera pose (2 PASS / 6 FAIL across 8
+  identical runs) and only near-black hand colours satisfy it; the guard
+  change is handed to the TEST AUTHOR as T101 with the new
+  `viewmodelScreenBounds()` seam. Evidence: commits 49118a6 and 64f7429 on
+  feature/render/m1, `npm run typecheck` exit 0, `npm run lint` 0 errors,
+  `npx playwright test e2e/viewmodel.spec.ts` 3 passed — M1
+
 ---
 
 ## T94 — the player hand is not distinct enough from the sky (T71 guard, e2e/viewmodel.spec.ts:27)
