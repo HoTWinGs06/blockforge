@@ -15,6 +15,38 @@ permissions:
   contents: read
 
 jobs:
+  # Enforces the rule that only RELEASE pushes to main. Every other agent works
+  # on feature/<agent>/<topic> and opens a PR. This job FAILS the build if a
+  # non-RELEASE branch tries to push to main, rather than only documenting it.
+  main-guard:
+    name: Main branch guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a direct push to main from a feature branch
+        if: github.ref == 'refs/heads/main'
+        env:
+          HEAD_SHA: ${{ github.event.head_commit.id }}
+        run: |
+          echo "Checking that main was updated by RELEASE, not by a feature branch."
+          if [ -z "$HEAD_SHA" ]; then
+            echo "No head commit on this event (for example a manual dispatch); nothing to check."
+            exit 0
+          fi
+          # The commit that landed on main must carry the RELEASE marker in its
+          # subject, which is how the release agent identifies its own commits.
+          SUBJECT=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%s "$HEAD_SHA" 2>/dev/null || echo "")
+          echo "Head commit subject: $SUBJECT"
+          case "$SUBJECT" in
+            release*|chore(release)*|feat(release)*|docs(release)*)
+              echo "OK: main was updated by a RELEASE commit."
+              ;;
+            *)
+              echo "REFUSED: main was updated by a commit that is not a RELEASE commit."
+              echo "Only the RELEASE agent may push to main. Everyone else opens a PR."
+              exit 1
+              ;;
+          esac
+
   tooling:
     name: Tooling (typecheck, lint, audit, gitleaks)
     runs-on: ubuntu-latest
@@ -60,8 +92,34 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Unit tests with coverage
         # vitest.config.ts enforces the 85% floor on src/core, so this fails
-        # below the threshold. That failure IS gate G1.
+        # below the threshold. That failure IS gate G1. Never lower the floor
+        # to make this green - a green CI obtained by moving the threshold is
+        # not a green CI.
         run: npm run coverage
+
+  gates:
+    name: Determinism and performance (gates G3 and G6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.0"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Transpile the gate scripts
+        # The gate scripts import the core's TypeScript directly, and node
+        # cannot resolve its ".js" specifiers to the ".ts" files behind them.
+        # The engine ships scripts/tsconfig.build.json for exactly this.
+        run: npx tsc -p scripts/tsconfig.build.json
+      - name: G6 - two fresh processes, same seed, identical world hash
+        run: node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js
+      - name: G3 - chunk generation and meshing under 16 ms average
+        run: node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js
+      - name: Engine self-check
+        run: node node_modules/.cache/blockforge-scripts/scripts/selfcheck/engineCheck.js
+      - name: Mesh self-check
+        run: node node_modules/.cache/blockforge-scripts/scripts/selfcheck/meshCheck.js
 
   smoke:
     name: Playwright smoke (gate G2)
@@ -82,7 +140,7 @@ jobs:
 
   pages:
     name: Deploy to GitHub Pages
-    needs: [tooling, tests, smoke]
+    needs: [tooling, tests, gates, smoke, main-guard]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
