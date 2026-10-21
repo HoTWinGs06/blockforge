@@ -23,6 +23,7 @@
  */
 
 import type { BlockId, Inventory, ItemStack, ToolSpec, Vec3 } from "../core/types.js";
+import { canBreak } from "../core/constants.js";
 import { dropFor } from "./drops.js";
 import {
   addItem,
@@ -39,6 +40,7 @@ import {
   type ItemEntity,
   type SolidProbe,
 } from "./itemEntities.js";
+import { wearTool } from "./tools.js";
 
 /** Ticks in one second. The world clock runs at twenty, and so does this. */
 export const TICKS_PER_SECOND = 20;
@@ -50,6 +52,18 @@ export interface DroppedItemView {
   readonly y: number;
   readonly z: number;
   readonly block: BlockId;
+}
+
+/**
+ * What a break did to the tool that made it.
+ *
+ * `toolBroke` is the id of the tool that used up its last use and left the
+ * pack, or null when nothing broke. The screen shows "your mattock broke"
+ * from it, so the player is not left wondering where the tool in their hand
+ * went.
+ */
+export interface BreakOutcome {
+  readonly toolBroke: string | null;
 }
 
 /** The player's starting kit: the four timber tools and some blocks. */
@@ -95,10 +109,20 @@ export class GameplaySession {
   }
 
   /**
-   * The player broke a block: leave what it drops on the ground.
+   * The player broke a block: leave what it drops on the ground, and pay
+   * for it with the tool.
    *
    * The tool matters. A block that needs a tool and was not broken with one
    * drops NOTHING, which is what makes tools worth crafting.
+   *
+   * T82: THE TOOL WEARS. Breaking a block with a tool costs that tool one
+   * use of its durability, and when the last use is gone the tool BREAKS
+   * and leaves the pack. The wear is gated on the same `canBreak` the drop
+   * table uses, so a block that dropped nothing (because the wrong tool was
+   * used) costs the tool nothing either - the two can never disagree.
+   *
+   * The wear lands in this class, so the caller does not have to know about
+   * it: a break is a break, and the tool that made it paid for it.
    */
   breakBlock(
     block: BlockId,
@@ -107,13 +131,19 @@ export class GameplaySession {
     y: number,
     z: number,
     world: SolidProbe,
-  ): void {
+  ): BreakOutcome {
     for (const stack of dropFor(block, tool)) {
       this.items = [
         ...this.items,
         spawnItem(this.nextItemId++, stack, x, y, z, this.tick, world),
       ];
     }
+    if (tool === null || !canBreak(block, tool)) {
+      return { toolBroke: null };
+    }
+    const wear = wearTool(this.inventory, tool);
+    this.inventory = wear.inventory;
+    return { toolBroke: wear.broke ? tool.id : null };
   }
 
   /**

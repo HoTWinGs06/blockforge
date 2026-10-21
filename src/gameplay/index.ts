@@ -13,7 +13,7 @@
  */
 
 export { GameplaySession, TICKS_PER_SECOND } from "./session.js";
-export type { DroppedItemView } from "./session.js";
+export type { BreakOutcome, DroppedItemView } from "./session.js";
 export {
   addItem,
   countOf,
@@ -28,6 +28,8 @@ export {
 } from "./inventory.js";
 export type { AddResult } from "./inventory.js";
 export { dropFor } from "./drops.js";
+export { SABRE_DAMAGE, sabreDamage, wearTool } from "./tools.js";
+export type { ToolWear } from "./tools.js";
 export {
   collectItems,
   isWithinReach,

@@ -308,3 +308,122 @@ instead, ready for the architect to copy verbatim into `docs/VICTORIES.md`:
 ```
 
 Posted to the Milo butler server — message id `1562532097288044618`.
+
+---
+
+## T82 — tools: mining with them, durability, and the wrong-tool rule
+
+**Commit:** (filled in below after commit) — branch `feature/gameplay/m1`.
+
+### What the state was when I picked this up
+
+The RECIPES were already done. Commit `afbebb0` (T81) derives all sixteen
+tool recipes from the contract's `TOOL_SPECS`, so a tool added to the
+contract gets a recipe automatically and a recipe can never disagree with
+the tool it makes. I did not rewrite that.
+
+The real gap was DURABILITY. The contract's `ItemStack` carries a
+`durability` field and the recipes hand out a tool at FULL durability, but
+nothing decremented it: a mattock could be used forever, and no tool could
+ever break. That is what this task closes.
+
+### What landed
+
+**`src/gameplay/tools.ts` (new)** — the tool rules, pure:
+
+- `wearTool(inventory, tool)` — the tool IN HAND loses one use of its
+  durability. When the last use is gone the tool BREAKS and leaves the
+  pack (the slot goes empty; there is no broken-tool item, and the pack is
+  nine slots deep). A tool that was never given a durability starts at the
+  full durability its spec says, because `TOOL_SPECS` is the one place that
+  says how long a tool lasts.
+- `SABRE_DAMAGE` / `sabreDamage(tier)` — the sabre's damage numbers by
+  tier. The sabre is a WEAPON: it is deliberately not in `TOOL_SPECS`, not
+  in the mining table, and no block names it as the kind it needs. Its
+  numbers are GAMEPLAY's to choose, and the tiers are the contract's own.
+
+**`src/gameplay/session.ts`** — `breakBlock` now returns a `BreakOutcome`
+(`{ toolBroke: string | null }`) and wears the tool that made the break.
+
+The wear is gated on the SAME `canBreak` the drop table uses, so a block
+that dropped nothing (because the wrong kind of tool was used) costs the
+tool nothing either. The wear and the drop table can never disagree.
+
+**`scripts/selfcheck/toolsCheck.ts` (new)** — 60 assertions, wired into
+`npm run gate:selfcheck`.
+
+### The API for RENDER/UI (T84) — this is the part that is NOT mine
+
+I touched **no file in `src/render/` and no file in `src/main.ts`**, so
+there is no merge conflict with T84 and no risk of us editing main.ts at
+the same time. The tool icons and the durability bar are T84's, and the
+durability numbers are already reaching the HUD: `HudHotbarSlot` already
+carries `durability?: number`, and main.ts already passes it.
+
+What T84 needs from me:
+
+- The wear is already applied. A tool in the selected slot loses 1
+  durability per break; at 0 it disappears from the pack. The HUD just
+  has to draw the bar.
+- `session.breakBlock(...)` now returns `BreakOutcome`. `toolBroke` is the
+  id of the tool that used up its last use (e.g. `"mattock_slate"`), or
+  null. main.ts calls `breakBlock` in `updateBreaking`; to show "your
+  mattock broke" the caller reads `outcome.toolBroke` and puts a message
+  up. That is a main.ts edit, so it is RENDER/UI's to make.
+- The tool ids the icons need are the contract's own: `mattock_timber`,
+  `mattock_slate`, `mattock_ironveil`, `mattock_lumencrystal`, and the
+  same for billhook, trowel and maul. `toolSpec(id)` gives the kind and
+  the tier, so an icon can be drawn per kind-and-tier.
+- The sabre has NO spec and NO recipe. It is not craftable and not in the
+  mining table. If a sabre icon is wanted, the architect has to add sabre
+  specs to `TOOL_SPECS` first — the recipe table would then pick them up
+  automatically, because it derives from that table.
+
+### Verified, not assumed
+
+- `npm run typecheck` — exit 0.
+- `npm run lint` — exit 0, 0 errors. The 7 warnings are pre-existing
+  `no-console` warnings in `scripts/verify.mjs`, not mine.
+- `npx vitest run` — exit 0, **224 tests passed** in 16 files.
+- `npm run build` — exit 0, built in 567ms.
+- `scripts/selfcheck/toolsCheck.ts` — **60/60 assertions pass**, exit 0.
+  The other four self-checks still pass (engine, mesh, crafting, drops).
+- `npm run coverage` — **the 85% floor is RED** (76.59% lines) and it is
+  NOT this task: the four new `src/core/crafting` files from T81 are
+  counted by the vitest config (`include: ["src/core/**/*.ts"]`) and have no
+  vitest tests yet. That is already filed as **T95** for the TEST AUTHOR.
+  My new file is `src/gameplay/tools.ts`, which the vitest coverage config
+  does NOT count, so this task neither helps nor hurts that number. I did
+  not edit anything under `tests/`.
+
+### ONE PRE-EXISTING FAILURE, NOT MINE
+
+`npm run gate:selfcheck` (and `gate:bench`, `gate:determinism`) fail at the
+`tsc` step with `TS5096` on `scripts/tsconfig.build.json` — it extends the
+root tsconfig, which sets `allowImportingTsExtensions:true`, and the
+script config sets `noEmit:false` to emit JS. The two conflict. This is
+**T86** and the fix is the engine's file; I did not touch it.
+
+Every self-check still runs and passes with the one-flag override T86's
+note already verified:
+`npx tsc -p scripts/tsconfig.build.json --allowImportingTsExtensions false`.
+
+### A FLEET BUG I FOUND, FOR THE LEADER
+
+`scripts/fleet/dispatcher.py` line 394 reads `branch in ("main",
+INTEGRATED)`, but the constant is named `INTEGRATED_BRANCH` (line 60).
+`INTEGRATED` is not defined anywhere, so `reap_completed()` raises
+`NameError: name 'INTEGRATED' is not defined` every time it runs. The
+traceback is in `~/.hermes/fleet/cron.log` at 18:30. The dispatch still
+works (it runs BEFORE the reap), but **the reap never completes, so no
+branch is being merged into `feature/integrated/m1`**. The five
+occurrences are all the same typo. The fix is one word: `INTEGRATED` ->
+`INTEGRATED_BRANCH` on lines 394, 398, 403, 404 and 411. It is not my
+file, so I did not edit it — I am reporting it here and on the board.
+
+### Determinism
+
+The tool rules are pure functions of the pack and the spec: no clock, no
+randomness, no DOM, no imports outside `src/core` and `src/gameplay`. The
+same pack and the same tool always give the same result, in any order, in
+any process.
