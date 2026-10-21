@@ -607,3 +607,30 @@ All six pass that way. I did not touch the engine's config file.
   table is unchanged by this task.
 - The render side has ONE line to add: the pause-menu hint should say
   that **G** eats.
+
+### The victory-log entry, ready for the architect to copy into docs/VICTORIES.md
+
+```
+- [2026-10-21T20:25:00Z] feature — health, hunger, damage, death and
+  respawn. The operator reported "and shit - the rest of the survival
+  loop" and "the HUD shows HEALTH 20 and HUNGER 20 but they are static:
+  nothing drains them, nothing damages you, and there is no death. That
+  is a HUD showing two decorative numbers, which is worse than not
+  showing them." Now they are real: hunger drains on the world's TICK
+  counter — never the wall clock — one point every thirty seconds and
+  three times as fast while sprinting; health falls from mob attacks,
+  from falls past three blocks and from starving at an empty belly; zero
+  health is death; and death puts the player back on their feet at full
+  health and a full belly while THE WORLD SURVIVES IT — every block they
+  broke stays broken, every item they dropped stays where it fell, and
+  the pack they were carrying is still in the pack. The tree canopy now
+  drops a wildfig, so there is food to eat and a meal puts the hunger
+  back. The drain is a pure function of (state, ticks, activity) and the
+  damage is a table, so there is no randomness to seed and the same
+  ticks give the same survival state however they are split.
+  Evidence: commit 981ccb9 on feature/gameplay/m1, npm run typecheck
+  exit 0, npm run lint exit 0 with 0 errors, npx vitest run 224/224 in
+  16 files, npm run build exit 0, and a NEW 61-assertion self-check
+  (scripts/selfcheck/survivalCheck.ts) that breaks the canopy, collects
+  the fig, starves the player to death, respawns them and eats — M3
+```
