@@ -86,7 +86,6 @@ export class WorldRenderer {
   private readonly chunkGroup = new THREE.Group();
   private readonly meshes = new Map<string, ChunkMesh>();
   private readonly highlight: THREE.LineSegments;
-  private readonly clock = new THREE.Clock();
 
   constructor(canvas: HTMLCanvasElement) {
     this.scene = new THREE.Scene();
@@ -176,7 +175,6 @@ export class WorldRenderer {
 
   /** Render one frame. */
   render(): void {
-    void this.clock.getDelta();
     this.renderer.render(this.scene, this.camera);
   }
 

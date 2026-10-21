@@ -12,3 +12,4 @@ export type { HudState, HudHotbarSlot } from "./hud.js";
 export { SoundBoard } from "./audio.js";
 export type { SoundName } from "./audio.js";
 export { buildAtlasCanvas, getAtlasTexture, faceUv, tileIndex, atlasSize, TILE_PX } from "./textures.js";
+export { installConsoleGuard, HEADLESS_CHROMIUM_ARGS } from "./consoleGuard.js";
