@@ -23,8 +23,11 @@ import { CHUNK_SIZE_Y, breakSecondsWith, requiredToolFor, toolSpec } from "./cor
 import {
   aabbIntersects,
   bodyAabb,
+  createJumpState,
   moveWithCollisions,
+  stepJumpAssist,
   stepPhysics,
+  type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
 import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
@@ -88,6 +91,15 @@ export class Game {
   private yaw = 0;
   private pitch = 0;
   private onGround = false;
+
+  /**
+   * The ENGINE's jump assist state: coyote time and jump buffering.
+   *
+   * The assist is the engine's (src/core/physics.ts) and it decides WHEN a
+   * jump fires. This file only feeds it the input and applies the velocity
+   * it asks for.
+   */
+  private jumpState: JumpState = createJumpState();
 
   private readonly keys = new Set<string>();
   private selectedSlot = 0;
@@ -274,9 +286,23 @@ export class Game {
    * implementation, which meant the module that was designed, documented and
    * tested for this was not the code that actually moved the player - the two
    * drifted, and src/core/physics.ts sat at 5.68% coverage while the game ran.
+   *
+   * The JUMP is the ENGINE's too: stepJumpAssist() decides WHEN a jump
+   * fires, and this file applies the velocity it asks for. The old code
+   * jumped only on `keys.has("Space") && onGround`, which DROPPED a press
+   * that arrived a fraction of a second too late (the body had already
+   * left the ground) or too early (the body had not landed yet) - that was
+   * the operator's "the jump does not work in all areas".
    */
   private applyGravity(dt: number): void {
-    if (this.keys.has("Space") && this.onGround) {
+    // The assist is stepped ONCE per tick and reads the ground state at the
+    // END of the previous tick, which is what this.onGround holds here.
+    const assist = stepJumpAssist(this.jumpState, {
+      jumpHeld: this.keys.has("Space"),
+      onGround: this.onGround,
+    });
+    this.jumpState = assist.state;
+    if (assist.jumped) {
       this.velocity = { ...this.velocity, y: JUMP_SPEED };
       this.onGround = false;
     }
@@ -629,6 +655,11 @@ export class Game {
     window.addEventListener("blur", () => {
       this.dragging = false;
       this.breaking = false;
+      // The held keys must go too. A keyup is not delivered when the window
+      // loses focus, so a key held at that moment stays down forever - and
+      // the jump assist only fires on the RISING edge, so a stuck Space key
+      // would leave the player unable to jump at all.
+      this.keys.clear();
     });
     window.addEventListener("contextmenu", (event) => event.preventDefault());
     window.addEventListener("mousemove", (event) => {
