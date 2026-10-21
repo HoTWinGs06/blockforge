@@ -39,6 +39,14 @@ export const PLAYER_HEIGHT = 1.8;
  */
 export const STEP_HEIGHT = 1.0;
 
+/**
+ * How deep the ground probe reaches below the feet, in blocks.
+ *
+ * The probe is a thin slab, not the body: it answers "is there something to
+ * stand on underfoot", and nothing else.
+ */
+const GROUND_PROBE = 0.05;
+
 /** Slack used when testing for overlap, so touching faces do not collide. */
 const EPSILON = 1e-9;
 
@@ -192,16 +200,16 @@ export function moveWithCollisions(
 /**
  * True when the body is standing on something.
  *
- * Probed with a thin box just under the feet, so a body that is exactly on a
- * block top counts as grounded and a body in mid-air does not.
+ * Probed with a thin slab just under the feet - not with the whole body.
+ * The probe answers one question, "is there ground underfoot", and a body
+ * whose head is inside a block is NOT standing on that block.
  */
-function groundedAt(
-  feet: Vec3,
-  world: SolidWorld,
-  halfWidth: number,
-  height: number,
-): boolean {
-  const probe = bodyAabb({ x: feet.x, y: feet.y - 0.05, z: feet.z }, halfWidth, height);
+function groundedAt(feet: Vec3, world: SolidWorld, halfWidth: number): boolean {
+  const probe = bodyAabb(
+    { x: feet.x, y: feet.y - GROUND_PROBE, z: feet.z },
+    halfWidth,
+    GROUND_PROBE,
+  );
   return collides(probe, world);
 }
 
@@ -212,6 +220,8 @@ function groundedAt(
  * The rules, in order:
  *   - not while rising: stepping up during a jump is climbing a wall
  *   - only from the ground: in mid-air this would be wall-climbing
+ *   - the move has budget left: one move raises the body at most
+ *     STEP_HEIGHT, no matter how many axes step up
  *   - there must be room for the body where it would land
  *   - there must be a ledge top within STEP_HEIGHT of the feet, in the
  *     columns the body would occupy
@@ -220,14 +230,21 @@ function stepUpY(
   feet: Vec3,
   target: Vec3,
   deltaY: number,
+  rising: boolean,
   world: SolidWorld,
   halfWidth: number,
   height: number,
+  maxY: number,
 ): number | null {
   if (deltaY > 0) return null;
-  if (!groundedAt(feet, world, halfWidth, height)) return null;
+  if (rising) return null;
+  if (!groundedAt(feet, world, halfWidth)) return null;
 
-  const raisedY = feet.y + STEP_HEIGHT;
+  // The budget is per MOVE, not per axis: a body that steps up on X and
+  // then on Z would otherwise climb two blocks in a single move, which is
+  // the wall-climb this is supposed to prevent.
+  const raisedY = Math.min(feet.y + STEP_HEIGHT, maxY);
+  if (raisedY <= feet.y) return null;
   if (collides(bodyAabb({ x: target.x, y: raisedY, z: target.z }, halfWidth, height), world)) {
     return null;
   }
@@ -274,6 +291,14 @@ function moveOnce(
   let onGround = false;
   let collided = false;
 
+  // The rise budget for this move. One move raises the body at most
+  // STEP_HEIGHT, however many axes step up, so a body cannot climb two
+  // blocks by moving diagonally into a corner of them.
+  const maxY = position.y + STEP_HEIGHT;
+  // A body that is moving upward is jumping, and a jumping body does not
+  // step up: that is how a wall becomes climbable.
+  const rising = velocity.y > 0;
+
   // X axis.
   if (delta.x !== 0) {
     const candidate = bodyAabb({ x: x + delta.x, y, z }, halfWidth, height);
@@ -282,7 +307,16 @@ function moveOnce(
       // A low ledge should be walked up, not walked into. Without this the
       // player is stopped by every single block of terrain and has to jump
       // to climb anything.
-      const steppedY = stepUpY({ x, y, z }, { x: x + delta.x, y, z }, delta.y, world, halfWidth, height);
+      const steppedY = stepUpY(
+        { x, y, z },
+        { x: x + delta.x, y, z },
+        delta.y,
+        rising,
+        world,
+        halfWidth,
+        height,
+        maxY,
+      );
       if (steppedY !== null) {
         x = x + delta.x;
         y = steppedY;
@@ -326,7 +360,16 @@ function moveOnce(
     const candidate = bodyAabb({ x, y, z: z + delta.z }, halfWidth, height);
     const hits = overlappingBlocks(candidate, world);
     if (hits.length > 0) {
-      const steppedY = stepUpY({ x, y, z }, { x, y, z: z + delta.z }, delta.y, world, halfWidth, height);
+      const steppedY = stepUpY(
+        { x, y, z },
+        { x, y, z: z + delta.z },
+        delta.y,
+        rising,
+        world,
+        halfWidth,
+        height,
+        maxY,
+      );
       if (steppedY !== null) {
         z = z + delta.z;
         y = steppedY;
@@ -378,6 +421,124 @@ export function stepPhysics(
     halfWidth,
     height,
   );
+}
+
+/**
+ * Ticks of grace after the body leaves the ground during which a jump still
+ * works.
+ *
+ * Six ticks is about a tenth of a second at 60 ticks a second: long enough
+ * that a press which is a fraction of a second late still jumps, short
+ * enough that the player cannot float on the edge of a ledge.
+ */
+export const COYOTE_TICKS = 6;
+
+/**
+ * Ticks a jump press is remembered while the body is still in the air.
+ *
+ * This is the other half of the same forgiveness: a press which is a
+ * fraction of a second early is not thrown away, it waits for the landing.
+ */
+export const JUMP_BUFFER_TICKS = 6;
+
+/**
+ * The player's jump state, carried from tick to tick.
+ *
+ * It is the whole of the player's own input history that the assist needs:
+ * how much grace is left, how long a remembered press lasts, and whether
+ * the key was already down.
+ */
+export interface JumpState {
+  /** Ticks of coyote grace left at the start of this tick. */
+  readonly coyoteTicks: number;
+  /** Ticks of patience left on a remembered press, at the start of this tick. */
+  readonly bufferTicks: number;
+  /** True when the jump key was already down on the previous tick. */
+  readonly heldLastTick: boolean;
+}
+
+/**
+ * What the player did on this tick.
+ */
+export interface JumpInput {
+  /** True while the jump key is down. */
+  readonly jumpHeld: boolean;
+  /** True when the body was standing on solid ground at the end of the last tick. */
+  readonly onGround: boolean;
+}
+
+/**
+ * The result of one tick of the jump assist.
+ */
+export interface JumpResult {
+  /** The state to carry into the next tick. */
+  readonly state: JumpState;
+  /** True when the player should jump on this tick. */
+  readonly jumped: boolean;
+}
+
+/**
+ * The state of a player who has not jumped yet.
+ */
+export function createJumpState(): JumpState {
+  return { coyoteTicks: 0, bufferTicks: 0, heldLastTick: false };
+}
+
+/**
+ * Advance the jump assist by one tick and say whether to jump.
+ *
+ * The assist only decides WHEN. The caller applies the jump velocity.
+ *
+ * The rules, in order:
+ *   - a press while the body is on the ground, or within COYOTE_TICKS of
+ *     leaving it, jumps at once
+ *   - a press earlier than that is remembered and fires on the landing
+ *   - a held key is not a new press: only the rising edge counts, so
+ *     holding the key does not bounce the player
+ *
+ * Pure: the result is a function of the state and the input alone. No
+ * clock is read, so the same inputs always give the same jump.
+ */
+export function stepJumpAssist(state: JumpState, input: JumpInput): JumpResult {
+  // The RISING EDGE of the key. The edge is derived from the history the
+  // state carries, so a caller cannot get it wrong by passing the key state
+  // where a press was meant.
+  const pressed = input.jumpHeld && !state.heldLastTick;
+
+  // The grace available RIGHT NOW: on the ground, or still within the
+  // window left over from the last time the body was on the ground.
+  const grace = input.onGround ? COYOTE_TICKS : state.coyoteTicks;
+
+  let jumped = false;
+  // A press spends the grace, so a jump cannot be followed by a coyote jump
+  // out of the same landing.
+  let nextCoyote = input.onGround ? COYOTE_TICKS : Math.max(0, state.coyoteTicks - 1);
+  let nextBuffer = state.bufferTicks > 0 ? state.bufferTicks - 1 : 0;
+
+  if (pressed) {
+    if (grace > 0) {
+      // Grounded, or just left the ground: the jump fires now.
+      jumped = true;
+      nextCoyote = 0;
+      nextBuffer = 0;
+    } else {
+      // Too early. The body is in the air and out of grace, so the press
+      // is remembered and fires when the body lands.
+      nextBuffer = JUMP_BUFFER_TICKS;
+    }
+  }
+
+  // A remembered press fires the moment the body touches down.
+  if (!jumped && state.bufferTicks > 0 && input.onGround) {
+    jumped = true;
+    nextBuffer = 0;
+    nextCoyote = 0;
+  }
+
+  return {
+    state: { coyoteTicks: nextCoyote, bufferTicks: nextBuffer, heldLastTick: input.jumpHeld },
+    jumped,
+  };
 }
 
 /**

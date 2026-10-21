@@ -488,3 +488,225 @@ these in centrally.
 ## Still open in ENGINE's lane
 
 - **T76** — water physics, preserved above at `5621eb4`.
+
+---
+
+## T90 — the jump assist (coyote time + jump buffering), and a step-up that is not a wall climb
+
+**Status:** DONE. Commit `d8b60e3` on `feature/engine/m1`.
+
+The records half of T90 (docs/PROGRESS.md, docs/VICTORIES.md) is the
+ARCHITECT's, per the stand-in leader's note, so this file and the board
+are the handoff. Nothing outside ENGINE's area was touched.
+
+### The jump assist (new, in `src/core/physics.ts`)
+
+The operator reported "the jump does not work in all areas". The cause is
+two presses being dropped, one a fraction of a second too late and one a
+fraction of a second too early:
+
+- **COYOTE TIME** — the ground contact survives `COYOTE_TICKS` (6) ticks
+  after the body leaves it, so a press that arrives just after a ledge
+  still jumps.
+- **JUMP BUFFERING** — a press that arrives before the landing is
+  remembered for `JUMP_BUFFER_TICKS` (6) ticks and fires the moment the
+  body touches down.
+
+Both are counted in **ticks, not seconds**, so the forgiveness does not
+depend on the frame rate. The state is the player's own input history and
+nothing else — the rising edge is derived from it, so a caller cannot
+pass a held key where a press was meant, and holding the key does not
+bounce the player.
+
+Pure: no clock is read, and the same input history always gives the same
+jump. The assist only decides **when**; the caller applies the velocity.
+
+**The API** (all in `src/core/physics.ts`, already re-exported by
+`src/core/index.ts`, so no barrel change was needed):
+
+```ts
+export const COYOTE_TICKS = 6;
+export const JUMP_BUFFER_TICKS = 6;
+
+export interface JumpState {
+  readonly coyoteTicks: number;   // grace left, at the start of the tick
+  readonly bufferTicks: number;   // patience on a remembered press
+  readonly heldLastTick: boolean; // was the key already down
+}
+export interface JumpInput {
+  readonly jumpHeld: boolean;  // the key state, not a press
+  readonly onGround: boolean;  // was on solid ground at the end of the last tick
+}
+export interface JumpResult {
+  readonly state: JumpState;
+  readonly jumped: boolean;     // the caller applies the jump velocity
+}
+
+export function createJumpState(): JumpState;
+export function stepJumpAssist(state: JumpState, input: JumpInput): JumpResult;
+```
+
+**THE WIRING, for whoever owns `src/main.ts`** (RENDER/UI's file — I did
+not touch it). Today `applyGravity` does:
+
+```ts
+if (this.keys.has("Space") && this.onGround) { this.velocity = { ...this.velocity, y: JUMP_SPEED }; this.onGround = false; }
+```
+
+which is exactly the drop: a press in the air is discarded. The change is
+to keep a `JumpState` on the `Game` and ask the assist instead:
+
+```ts
+private jumpState = createJumpState();
+
+// in applyGravity(dt), replacing the `if (this.keys.has("Space") ...)`:
+const jump = stepJumpAssist(this.jumpState, {
+  jumpHeld: this.keys.has("Space"),
+  onGround: this.onGround,
+});
+this.jumpState = jump.state;
+if (jump.jumped) {
+  this.velocity = { ...this.velocity, y: JUMP_SPEED };
+  this.onGround = false;
+}
+```
+
+One caveat for the caller: the assist needs `onGround` from the END of
+the previous tick, so it must be stepped **before** `stepPhysics` overwrites
+`this.onGround` — which is where the current jump check already sits, so
+the ordering is unchanged.
+
+### The step-up, hardened
+
+The step-up (`f9e0ac6`) was measured against a fuzz (40k random worlds,
+8946 valid start states) and **three holes** were found in it. All three
+are ways to climb a wall, which is the one thing the step-up must not be:
+
+1. **A RISING body stepped up.** The rule was "not while rising", but it
+   was checked against the movement **delta**, and the app moves the X
+   axis with `delta.y = 0` — so a *jumping* player walking into a ledge
+   was lifted by it. It is now checked against the body's actual vertical
+   **velocity**. Measured before the fix: a body with `vy = 8` walking
+   into a one-block ledge was raised onto it.
+
+2. **One move could raise the body by 2.0 blocks**, twice `STEP_HEIGHT`:
+   the X axis stepped up and then the Z axis stepped up again, because
+   the Z axis read the already-raised `y`. The rise budget is now per
+   **move**, so a diagonal staircase is not climbed two blocks at a time.
+   Measured before the fix: feet `y=1` → `y=3` in a single move.
+
+3. **The ground probe was the whole body**, so a body whose *head* was
+   inside a block counted as standing on that block and could step up off
+   it. The probe is now a thin slab under the feet, which is the only
+   question it was ever meant to answer.
+
+A one-block ledge is still walked up, and a body in mid-air still does not
+step up. Both are pinned.
+
+### A note on the committed step-up test
+
+The test in `tests/physics.test.ts` ("a one-block ledge is walked up")
+uses a floor at `y=-1` and a ledge block at `(1,0,0)`, which spans
+`y 0..1` — so the ledge's **top is y=1**, the same height the body's feet
+are already at. The body therefore sails over the top of the block and
+the step-up code is never reached; the test passes for the wrong reason.
+It is a vacuous test of the same class the project has been finding all
+week. The real shape is a ground whose top is `y=1` and a step whose top
+is `y=2`. I did not edit the test — `tests/` is the TEST AUTHOR's — but
+the correct shape is pinned in the engine's own self-check, and the
+finding is on the board for the TEST AUTHOR.
+
+### Verified on the committed tree
+
+- `npm run typecheck` → exit 0
+- `npm run lint` → exit 0, 0 errors (7 pre-existing `no-console` warnings)
+- `npx vitest run` → exit 0, 16 files, **224 tests passed**
+- `npm run coverage` → exit 0, 93.75% stmts / 87.32% branch against the
+  85% floor (**the floor was not moved**)
+- `npm run build` → exit 0
+- G6 determinism → PASS, 5 seeds (0, 1, 12345, 2147483647, -1) identical
+  hashes across fresh processes
+- G3 bench → PASS, average **4.537 ms/chunk** against the 16 ms budget,
+  p95 4.818
+- engine + mesh self-checks → PASSED (18 new assertions, 43 total)
+- `npm run check` → **ALL GREEN 6/6**, exit 0
+
+### Behaviour contract for the TEST AUTHOR
+
+`src/core/physics.ts` now exports `COYOTE_TICKS`, `JUMP_BUFFER_TICKS`,
+`createJumpState()`, `stepJumpAssist(state, input) -> { state, jumped }`,
+`JumpState`, `JumpInput`, `JumpResult`. Nine behaviours worth pinning:
+
+1. a press on the ground jumps on that tick
+2. a **held** key does not jump again (only the rising edge counts)
+3. a press within `COYOTE_TICKS` of leaving the ground still jumps
+4. a press after the coyote window has expired does not jump
+5. the coyote window is exactly `COYOTE_TICKS` ticks long
+6. a press too early does not jump immediately, and fires on the landing
+7. a press longer than `JUMP_BUFFER_TICKS` before the landing is forgotten
+8. a ground jump leaves no grace behind it (no double jump)
+9. the same input history always gives the same jump (purity)
+
+And three step-up behaviours: a one-block ledge is walked up; a **rising**
+body is not lifted by a ledge; one move never raises the body by more than
+`STEP_HEIGHT`.
+
+Note on coverage: `src/core/physics.ts` is individually at 74% statements
+because the new assist has no vitest coverage yet (the overall gate
+passes at 93.75%). `tests/` is the TEST AUTHOR's file, so the 18
+assertions live in `scripts/selfcheck/engineCheck.ts`, which is ENGINE's
+own and runs in `gate:selfcheck`.
+
+### Still open in ENGINE's lane
+
+- **T76** — water physics, preserved above at `5621eb4`.
+- **T93** — the falling body landing on a block it fell past. I did NOT
+  take this: it is a separate task with its own board brief, and my
+  measurement of it (a body falling past a block lands on its top, at
+  `y=3.000` when the floor's top is `y=1`) suggests it is real and worth
+  its own careful fix rather than a change smuggled into this one.
+
+### Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+Same reasoning as the T46/T47/T86 entries above: the entry lives here and
+on the board rather than in `docs/VICTORIES.md`, because the brief
+contradicts itself about that file and a concurrent append from a second
+agent produces a content conflict that strands the role's whole branch.
+
+> - [2026-10-21T22:52:00Z] feature — the jump assist (coyote time and jump
+>   buffering) and a step-up that is not a wall climb. The operator
+>   reported "the jump does not work in all areas"; the cause was two
+>   presses being DROPPED, one a fraction of a second too late (the body
+>   had already left the ground) and one too early (the body had not
+>   landed yet). `src/core/physics.ts` now carries COYOTE_TICKS (6) and
+>   JUMP_BUFFER_TICKS (6) — counted in TICKS, not seconds, so the
+>   forgiveness does not depend on the frame rate — and a pure
+>   `stepJumpAssist(state, input)` whose state is the player's own input
+>   history and nothing else. The step-up, hardened against a 40k-world
+>   fuzz, had three holes, all of them wall climbs: a RISING body was
+>   lifted by a ledge (the rule checked the movement delta, and the app
+>   moves the X axis with delta.y = 0, so the check never fired); ONE
+>   MOVE could raise the body by 2.0 blocks, twice STEP_HEIGHT (the Z
+>   axis read the already-raised y the X axis had produced); and the
+>   ground probe was the whole body, so a body whose head was inside a
+>   block counted as standing on it and could step up off it. Evidence:
+>   commit d8b60e3 on feature/engine/m1 — 18 new assertions in the
+>   engine's own self-check, all passing; `npm run check` ALL GREEN 6/6
+>   exit 0; G6 determinism PASS (5 seeds, identical hashes across fresh
+>   processes); G3 bench PASS at 4.537 ms/chunk average against the 16 ms
+>   budget (p95 4.818); vitest 224/224; coverage exit 0 at 93.75% against
+>   the untouched 85% floor; build exit 0 — M1
+
+### Milo
+
+Posted, confirmed: `{"ok": true, "channel": "herdr-workspace", "message_id":
+"1562598181869453354"}`. The entry text is the same as the victory-log entry
+above, minus the timestamp and the milestone tag.
+
+### Board
+
+- **T90** → done, with the full note.
+- **T93** → note only, with the reproduction of the falling-body bug and
+  where the fix belongs. Not fixed under T90; it is a separate task.
+- **T100** → added, owner `renderui`: wire the assist into `src/main.ts`,
+  which is RENDER/UI's file. The exact diff is in the T100 note and above.
