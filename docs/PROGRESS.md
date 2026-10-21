@@ -6,8 +6,9 @@
 
 **Project:** BlockForge — an original, unofficial Minecraft-inspired voxel sandbox.
 **Current milestone:** M1 — ENGINE
-**Last updated:** 2026-10-21 (M1 kickoff cycle)
-**Status:** M1 kickoff complete. Contract frozen, repo scaffolded, toolchain green.
+**Last updated:** 2026-10-21 (M1 kickoff cycle, post-kickoff)
+**Status:** M1 kickoff complete. Contract frozen, repo scaffolded, toolchain green,
+M1 breakdown posted to the board, and Playwright proven working on the Windows host.
 
 ---
 
@@ -27,6 +28,58 @@
 **Not yet done (do not assume otherwise):** no engine code, no renderer, no
 tests, no CI, no README, no GitHub repo. The public repo is created only
 after M1 and M2 gates pass.
+
+## 1b. Repository topology (read this before touching anything)
+
+The **canonical repo is on the Linux host**: `~/workspace/blockforge`, branch
+`main`. It is the git "origin" for everyone.
+
+**Linux cannot reach Windows** — Windows has no `sshd` installed — so the
+Windows box can clone *from* Linux but never the reverse. Any agent working on
+Windows must clone **from** Linux:
+
+```sh
+git clone hermes:~/workspace/blockforge
+```
+
+A clone already exists at `C:\Users\JOEL\workspace\blockforge` with
+`origin = hermes:~/workspace/blockforge` (fetch and push both work).
+
+### Per-agent git worktrees (Linux host)
+
+All created from `main` @ `9080292`:
+
+| Agent | Worktree | Branch |
+|---|---|---|
+| ENGINE | `~/workspace/worktrees/bf-engine` | `feature/engine/m1` |
+| TEST AUTHOR | `~/workspace/worktrees/bf-test-author` | `feature/test-author/m1` |
+| RENDER/UI | `~/workspace/worktrees/bf-render` | `feature/render/m1` |
+| RELEASE | `~/workspace/worktrees/bf-release` | `feature/release/m1` |
+| RED-TEAM | `~/workspace/worktrees/bf-redteam` | `feature/redteam/m1` |
+
+### M1 board breakdown
+
+| Task | Role | Owner |
+|---|---|---|
+| T26 | ENGINE — core RNG, terrain, greedy mesher, physics, raycast | hermes-linux |
+| T27 | TEST AUTHOR — determinism, purity and property suite (`tests/`) | antigravity |
+| T28 | RENDER/UI — camera, break/place wiring, procedural textures | hermes-win |
+| T29 | RELEASE — CI workflow and README with the disclaimer | hermes-win |
+| T30 | RED-TEAM — attack the core | opencode |
+
+Board commands (Linux host):
+
+```sh
+python3 ~/workspace/agent-queue/board.py status
+python3 ~/workspace/agent-queue/board.py claim-next --owner <you>
+python3 ~/workspace/agent-queue/board.py update <T-id> --owner <you> --status done --notes "..."
+```
+
+> **Quoting warning:** board notes go through `bash` when passed as shell
+> arguments. Backticks and `$` inside a note are interpreted as command
+> substitution and will corrupt the note. Write board operations as a small
+> Python script that calls `board.py` with an **argv array** instead of
+> building a shell string.
 
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
@@ -81,6 +134,34 @@ Run on the Linux host after `npm install` (156 packages, 0 vulnerabilities):
 `npm install` was run with `--no-audit --no-fund`; `npm audit` was then run
 separately and is clean.
 
+### Playwright (gate G2) — runs on the Windows host
+
+**The Linux host cannot run Playwright.** It has no Chromium and none of its
+runtime libraries (`libnss3`, `libatk`, `libgbm`, `libasound`, `libxkbcommon`,
+`libpango`, `libcairo`), and **no sudo**, so `npx playwright install --with-deps`
+cannot work there. It does have a working docker daemon and the user is in the
+`docker` group, so the official Playwright container is a viable alternative.
+
+**The Windows host works, and is verified.** Playwright 1.64.1 with
+`chromium-1248` and `chromium_headless_shell-1248` installed under
+`%LOCALAPPDATA%\ms-playwright`. Verified by launching it: Chromium
+**156.0.8078.4** starts headless, a page loads, and the console stream is
+observable (0 messages on a clean page) — which is exactly what gate G2 asserts
+on.
+
+```sh
+cd C:\Users\JOEL\workspace\blockforge
+npm ci
+npx playwright install chromium
+```
+
+**Watch out:** running `npx playwright install chromium` *outside* the repo
+installs whatever build the global `playwright` wants (build 1208), not the one
+the pinned `@playwright/test@1.64.1` expects (build 1248) — the launch then
+fails with "Executable doesn't exist". Always run it from inside the repo.
+
+RELEASE (T29) owns the final decision on where CI runs the smoke test.
+
 ## 4. Milo butler discovery (do not rediscover)
 
 The brief required discovering the Milo interface exactly rather than
@@ -131,27 +212,32 @@ None open. See `docs/BLOCKERS.md`.
 
 ## 7. Next actions
 
-1. **TEST AUTHOR** — write the determinism/purity suite first: `src/core` must
-   contain no `Math.random`/`Date.now`/`performance.now`, no DOM access, no
-   `localStorage`/`IndexedDB`, no network calls, no Three.js import; and must
-   not import from `src/engine`, `src/render`, `src/net`, `src/gameplay` or
-   `server/`. This is the load-bearing property of the whole project.
-2. **ENGINE** — implement `SeededRng` in `src/core/rng.ts` (own
-   implementation, no library), then terrain generation, greedy meshing,
-   physics and raycasting against the frozen contract. Nothing in the
-   contract may be renamed.
-3. **RENDER/UI** — first-person camera and block break/place wiring; textures
-   generated procedurally with canvas 2D (no committed art assets).
-4. **RELEASE** — set up `.github/workflows/ci.yml` (the repo has no CI yet, so
-   G5's "CI green" is not yet satisfiable) and the README with the required
-   disclaimer:
+Full detail for every task is on the board. Summary:
+
+1. **T27 TEST AUTHOR (antigravity)** — write the determinism/purity suite
+   *first*: `src/core` must contain no `Math.random`/`Date.now`/`performance.now`,
+   no DOM access, no `localStorage`/`IndexedDB`, no network calls, no Three.js
+   import; and must not import from `src/engine`, `src/render`, `src/net`,
+   `src/gameplay` or `server/`. This is the load-bearing property of the whole
+   project, and the ENGINE agent builds against this spec — lead with it.
+2. **T26 ENGINE (hermes-linux)** — implement `SeededRng` in `src/core/rng.ts`
+   (own implementation, no library), then terrain generation, greedy meshing,
+   physics and raycasting against the frozen contract. Nothing in the contract
+   may be renamed.
+3. **T28 RENDER/UI (hermes-win)** — first-person camera and block
+   break/place wiring; textures generated procedurally with canvas 2D (no
+   committed art assets).
+4. **T29 RELEASE (hermes-win)** — set up `.github/workflows/ci.yml` (the repo
+   has no CI yet, so G5's "CI green" is not yet satisfiable) and the README
+   with the required disclaimer:
 
    > BlockForge is an original, unofficial Minecraft-inspired voxel sandbox.
    > Not affiliated with, endorsed by, or sponsored by Mojang or Microsoft.
    > Minecraft is a trademark of Mojang AB / Microsoft.
 
-5. **RED-TEAM** — attack the core once ENGINE has landed: pathological
-   seeds, property-test violations, non-determinism.
+5. **T30 RED-TEAM (opencode)** — attack the core once ENGINE has landed:
+   pathological seeds, property-test violations, non-determinism. A red-team
+   test that fails is a success, not a bug in their work.
 6. **NETCODE** — no M1 work; the wire protocol is frozen at
    `PROTOCOL_VERSION = 1` but multiplayer is an M4 gate.
 
