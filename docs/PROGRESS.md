@@ -322,6 +322,82 @@ further.
 mobs, hunger, biomes, caves, trees, water, day/night, save/load,
 multiplayer, and the settings menu beyond the pause overlay.
 
+## 1g. Speed and cleanliness pass (measured, not asserted)
+
+### The biggest drag was structural, not tool speed
+
+`main` was **45 files and 5,860 lines behind** — every agent was branching
+from the bare scaffold, and branches were stacking on each other instead of on
+a shared `main`. That is what produced the stale golden hash: the render
+branch's `engine-wiring` test pinned a world hash recorded against a
+mid-flight engine, and the engine kept moving. The render branch also did not
+build on its own (`engineBridge.ts` could not resolve `../engine/index.js`).
+
+`main` is now the integrated state (`feature/architect/m1-integration`,
+`672dee1`) — **50 files, 6,014 insertions** versus the scaffold. Branch from
+`main` now, not from a stacked branch.
+
+### One-command gate
+
+```sh
+npm run verify     # typecheck -> lint -> test -> coverage -> build, with a timing table
+npm run check      # the fast inner loop: typecheck, lint, test
+```
+
+`scripts/verify.mjs` runs the chain in order, stops at the first failure,
+names the failing step, and prints per-step milliseconds. One command and one
+summary beats five commands and five exit codes to eyeball.
+
+### Measured wins
+
+| Change | Before | After | Note |
+|---|---|---|---|
+| vitest `isolate: false` | 7,855 ms | **6,151 ms** | same 105-test suite, −1.7 s (−22 %) |
+| new worktree setup | `npm ci`, 6–30 s, ~150 MB | **symlinked `node_modules`** | `scripts/new-worktree.sh` |
+
+`isolate: false` reuses one worker instead of spawning one per file. `src/core`
+is pure, so files cannot leak state into each other — and sharing the module
+registry would *expose* a leak if one existed.
+
+`scripts/new-worktree.sh <agent> [suffix]` creates a worktree and links the
+canonical repo's `node_modules` into it. Seven worktrees were duplicating
+~1 GB of dependencies. **Do not run `npm ci` in a linked worktree** — it would
+delete the shared tree. Run `npm install <pkg>` if you need a new dependency;
+that replaces the link with a real tree, which is correct but slower.
+
+### Cleanliness
+
+- `src/dev/entry.ts` → **`src/entry.ts`**. It is the production entry point
+  and it ships to users; the dev world stand-in it replaced is gone, so the
+  `dev/` name was a lie about what the file is.
+- `eslint.config.js` gained a **Node-globals override for `scripts/`** — the
+  Node helper scripts were being linted against browser globals and
+  `console`/`process` came back undefined.
+- The **vacuous-hash canary was inverted**. `tests/engine-wiring.test.ts`
+  deliberately pinned the OLD bug (`a.hash() === c.hash()` for two *different*
+  seeds) so that finding E5 stayed visible. The engine has since **fixed E5**
+  — `hash()` now mixes the seed and the chunk contents — so the canary fired
+  and had to be inverted to assert the fixed behaviour. The new form is
+  *stronger*: same seed → same hash, **different seed → different hash**,
+  which the old form could never have detected.
+
+### Gate state on `main` right now
+
+| Step | Result |
+|---|---|
+| typecheck | 0 |
+| lint | 0 |
+| test | **105 / 105 green** across 9 files |
+| build | 0 |
+| G2 Playwright | **4 / 4**, including the zero-console-warnings assertion |
+| **coverage (G1)** | **RED — 64.86 % statements vs the 85 % floor** |
+
+The coverage gap is real and precisely located: `physics.ts` 5.68 % and
+`raycast.ts` **0 %** are the two holes; branches sit at 49 % even where
+statements are high. `rng.ts` 82.85 %, `meshing.ts` 90.72 % and `noise.ts`
+100 % are close. G1 closes when the engine's code has real tests against it —
+**the floor must not be lowered to make it green.** Filed as T55.
+
 ## 2. Toolchain (discovered, verified — do not rediscover)
 
 | Tool | Version | Location |
