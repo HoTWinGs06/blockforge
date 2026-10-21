@@ -17,7 +17,7 @@ export default defineConfig({
     // One worker reused across files instead of a fresh worker per file.
     // src/core is pure, so files cannot leak state into each other - and
     // sharing the registry would expose any leak that did exist.
-    isolate: false,
+    isolate: true,
     coverage: {
       provider: "v8",
       // Vitest 5 removed `coverage.all`; `include` now also pulls in untested

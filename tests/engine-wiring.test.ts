@@ -24,10 +24,16 @@ describe("the render layer is wired to the engine's real world", () => {
     const b = new ChunkStore(1337);
     const c = new ChunkStore(4242);
 
-    // The engine's own hash on an empty store is the same constant for every
-    // seed - documented E5 behaviour, asserted so it cannot be forgotten.
+    // E5 IS FIXED. The engine's hash() now mixes the seed and the chunk
+    // contents, so it is no longer a constant that ignores the seed. This
+    // assertion was deliberately pinning the OLD vacuous behaviour as a
+    // canary; the engine fixed the bug, so the canary has to be inverted or
+    // it will keep failing forever while protecting nothing.
+    // The same seed must still give the same hash...
     expect(a.hash()).toBe(b.hash());
-    expect(a.hash()).toBe(c.hash());
+    // ...and a DIFFERENT seed must now give a DIFFERENT hash. This is the
+    // assertion the vacuous hash could never have made.
+    expect(a.hash()).not.toBe(c.hash());
   });
 
   it("the engine's world has solid ground and a real mesh", () => {

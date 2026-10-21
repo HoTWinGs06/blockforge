@@ -9,8 +9,8 @@
  * src/core/ or src/engine/ is modified by the render side.
  */
 
-import { installConsoleGuard } from "../render/index.js";
-import { EngineWorld } from "../render/engineBridge.js";
+import { installConsoleGuard } from "./render/index.js";
+import { EngineWorld } from "./render/engineBridge.js";
 
 export function boot(): void {
   // Install the console guard BEFORE the WebGL context is created, so the
@@ -22,7 +22,7 @@ export function boot(): void {
   if (!canvas) {
     throw new Error("canvas #game not found");
   }
-  void import("../main.js").then(({ mountGame }) => {
+  void import("./main.js").then(({ mountGame }) => {
     mountGame(canvas, new EngineWorld());
   });
 }
