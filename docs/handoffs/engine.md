@@ -932,3 +932,85 @@ necessary, but on its own it would have made the fleet log a NameError
 traceback on every single pass instead of a quiet "pass: 2 agent(s)
 already running" — the reap would still never have run, and the symptom
 would have looked like progress. The two undefined names had to go first.
+
+
+---
+
+## T97 addendum — the reap is LIVE, and the integrated branch is green
+
+**DEPLOYED AND PROVEN IN THE LIVE FLEET.** After committing, I copied the
+fixed `scripts/fleet/dispatcher.py` to `/home/hermes/workspace/fleet-dispatcher.py`
+— the file `crontab -l` actually executes — because a fix in the repo alone
+changes nothing the running fleet does. (I checked the deployment gap first:
+the two files were byte-identical when I started, so the copy is how this
+deployment has always been done.) The next cron pass, at **02:24:02**,
+produced the first REAPED lines this fleet has ever emitted:
+
+    2026-10-22T02:24:02 REAPED feature/engine/m1 into feature/integrated/m1 (tasks T26, T46, T47, T86, T90, T93) -> 5a2184f
+    2026-10-22T02:24:02 REAPED feature/test-author/m1 into feature/integrated/m1 (tasks T27, T48, T49, T50, T55, T64, T65, T66, T67, T68, T88) -> d7b5ea3
+    2026-10-22T02:24:02 REAPED feature/netcode/m1 into feature/integrated/m1 (tasks T39) -> cdea62b
+    2026-10-22T02:24:02 REAPED feature/redteam/m1 into feature/integrated/m1 (tasks T87) -> 68569ca
+
+`grep -c REAPED` went from **0 to 4**. Note the line right after them:
+`pass: 2 agent(s) already running, limit 2` — the reap ran on a pass where
+the fleet was AT CAPACITY. That is the exact case the filed bug said could
+never happen. It is now the normal case.
+
+**Tracebacks: 15 before, 0 after.** Every one of the 15 is the same
+`NameError: name 'INTEGRATED' is not defined` at line 394, and the last two
+are at 01:34:01 and 01:38:01 — the two passes where the fleet was below
+capacity, so the dispatch ran and `main()` fell through to the reap. Zero
+tracebacks in any pass after 02:24.
+
+**The real integrated branch is GREEN.** `npm run check` in the canonical
+repo on `feature/integrated/m1` @ `68569ca`, AFTER the four reaps landed:
+**ALL GREEN 6/6, exit 0** — typecheck 6042 ms, lint 3923 ms (0 errors, 14
+pre-existing no-console warnings), test 6081 ms (**349 passed, 3 expected
+fail, 25 files**), gate:determinism 3458 ms (5 seeds identical across fresh
+processes), gate:bench 2565 ms, gate:selfcheck 2279 ms. I ran the same
+chain on a scratch clone of the fully merged tree BEFORE deploying, so the
+merge was known-green before the live dispatcher did it, not after.
+
+**An end-to-end test, with the old file as the control.** I wrote a sandbox
+harness (a real git repo, a real role worktree with a commit ahead, a
+stubbed board) that calls the REAL `reap_completed()` and asserts the
+integrated branch moved. Fixed file: `REAPED feature/engine/m1 into
+feature/integrated/m1 (tasks T1) -> 7c8f970`, integrated moves
+`ff1dd89e -> 7c8f970`, and a second reap is a no-op (idempotent). The
+UNFIXED file, run against the same sandbox, dies with the same NameError
+the fleet's own cron log has been showing. The test is not a claim about my
+code; it is a comparison, and the control is the thing that fails.
+
+**The reaper now merges a role's whole branch on the strength of ONE done
+task** — I flagged this above as a policy question I did not redesign. It
+is now live, so it is worth being explicit: the first reap brought
+`feature/engine/m1` across with my own in-flight T97 work in it, because
+T90 (jump assist) and T93 (physics) were done and the branch had not been
+merged. That is the designed behaviour, not a bug I introduced, and the
+board can tighten it if it wants.
+
+**Commits (all on `feature/engine/m1`):** `1d0836d` the three-bug fix,
+`4f2ba2e` the handoff, `5a2184f` the reap lock. The repo copy and the
+deployed copy are the same blob (`4be295d`), and the integrated branch
+carries them.
+
+**For whoever picks up the fleet next:** the reaper is live, so the board's
+"a SHA on the branch is not a finish line" warning is now enforced by
+mechanism rather than by hand. The remaining gap is that a reaped branch is
+merged whole, so half-finished commits of a role's NEXT task can ride along
+with a finished one. Tightening that is the ARCHITECT's call.
+
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+- [2026-10-22T02:24:02+0000] fleet - the dispatcher's automatic reap now
+  actually runs - evidence: `grep -c REAPED ~/.hermes/fleet/dispatcher.log`
+  went 0 -> 4 on the first pass after the fix (engine/m1 -> 5a2184f,
+  test-author/m1 -> d7b5ea3, netcode/m1 -> cdea62b, redteam/m1 -> 68569ca);
+  cron.log tracebacks 15 -> 0; `npm run check` on the reaped
+  feature/integrated/m1 @ 68569ca = ALL GREEN 6/6 exit 0, 349 passed / 3
+  expected fail, G6 5 seeds identical across fresh processes - commits
+  1d0836d (the three-bug fix), 5a2184f (the reap lock) on
+  feature/engine/m1 - M1
