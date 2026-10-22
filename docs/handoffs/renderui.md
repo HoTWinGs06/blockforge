@@ -417,3 +417,131 @@ ENGINE's file. `tests/` is the TEST AUTHOR's, so the vitest coverage for
   `026458b` on `feature/render/m1`; `npm run check` ALL GREEN 6/6 exit 0;
   `npm run coverage` exit 0 at 93.75% against the untouched 85% floor;
   `npm run build` exit 0 — M1
+
+---
+
+## T96 — the dropped items are DRAWN (the invisible-item bug)
+
+**Commit `1a9801f` on `feature/render/m1`.** Base: `27d2a5d`, which merges
+`feature/gameplay/m1` — my branch had no `src/gameplay/` at all, so the
+T80 API had to be merged in before anything could be coded against
+`session.droppedItems()`.
+
+### What landed
+
+`src/render/drops.ts` (new) — the dropped items, drawn. Each item is a
+cube a quarter of a block, wearing the texture of the block it came from
+through the same `faceUv()` atlas corners the world meshes and the hand
+use. Two drops of one kind share a geometry; the material is the world
+material, so a drop is lit by the same sun and sits in the same fog as
+everything else.
+
+`src/render/renderer.ts` — `setDroppedItems(items)`, a `droppedItems`
+getter, and `dropScreenBounds(drop)` (projects a drop through the camera
+so a browser test can sample the pixels where it should be).
+
+`src/main.ts` — the render path calls
+`renderer.setDroppedItems(session.droppedItems())` every frame, and plays
+a new soft **pickup** chime when the pack grows across `session.update()`.
+The pack only grows there, so that is the pickup signal, and it needs no
+new API from the gameplay layer.
+
+`src/render/audio.ts` — the `pickup` sound: a sine rise with a whisper of
+noise under it, deliberately quiet and short, because it can fire several
+times a second.
+
+The drops **spin**, driven by the renderer's frame counter — the same
+counter the clouds drift on. Never a wall clock.
+
+### The layering rule is kept
+
+`src/render/` must not import from `src/gameplay/` (ARCHITECTURE.md §1),
+so the render layer declares its OWN `DroppedItemView` with the same
+fields. The two are structurally identical, so the session's list is
+passed straight in — the same trick the gameplay layer used for
+`SolidProbe`.
+
+### Rebuild on change, not per frame
+
+The meshes are created and destroyed on a **diff of the item ids**, which
+is the right key: the id is stable for the item's whole life, and the
+list only changes when a block breaks or an item is collected. The
+**position** is written every call, because the item *falls* into the
+hole it was broken out of — a drop placed at its first frame's position
+would hang in mid-air for ever.
+
+### The guard that catches it
+
+`e2e/drops.spec.ts` asserts the LOGIC: break a block, an item is on the
+ground, walk over it, the pack gains one. That test passes even when
+nothing is ever drawn — which is exactly this bug. So
+`e2e/drops-visual.spec.ts` (new, 3 tests) is the guard that catches it,
+and it checks three things the logic test cannot:
+
+1. the **renderer** has a mesh for every item the session has, at the
+   item's centre, at a quarter of a block;
+2. the mesh wears **one atlas cell**, not the whole atlas (the classic
+   BoxGeometry-lays-UVs-out-by-vertex-group bug);
+3. the drop is **visible on screen** — the pixels where the projection
+   says it should be are TEXTURED, sampled from a real screenshot.
+
+The third is the only check that cannot pass on a mesh nobody can see.
+
+**Verified the guard can fail:** with the one `setDroppedItems()` call
+removed, it fails with *"the renderer must DRAW the item the session
+dropped"*. A guard that cannot fail is worth nothing.
+
+### Hooks for the TEST AUTHOR
+
+`window.__blockforge` gains:
+
+- `drawnDrops()` → `[{ id, x, y, z, size, minU, maxU, minV, maxV, screen }]`
+  — the **renderer's** own drops, with the screen box in CSS pixels.
+- `droppedItems()` → `[{ id, x, y, z }]` — the **session's** view.
+
+`dropped()` is still the session count. Use `drawnDrops()` when you want
+to assert a drop is VISIBLE; `dropped()` when you want the logic.
+
+### Verified
+
+- `npm run check` — ALL GREEN 6/6 exit 0 (typecheck, lint, 224 unit
+  tests, determinism, bench, selfcheck).
+- `npm run build` — exit 0.
+- The three new browser guards pass in a real headless Chromium
+  (3 passed, 4.4m).
+
+### A PRE-EXISTING failure I found — GAMEPLAY's to fix
+
+`e2e/drops.spec.ts` → *"walking over it collects it"* **fails on the
+untouched baseline** `27d2a5d` with all my changes stashed. I stashed and
+re-ran to prove it is not mine: it fails identically there (1 failed /
+1 passed). The block breaks, the drop appears, but the walk-over does not
+add to the pack within the 90 s wait.
+
+Suspect, in gameplay's area: `isWithinReach()` in
+`src/gameplay/itemEntities.ts` measures against the item's **centre**,
+and the item rests on **top** of the block below the hole
+(`restingY() = solidCellY + 1 + ITEM_SIZE/2`), so the vertical window may
+be measured against the wrong point. I did not touch it — it is their
+file and their test. Reported on the board on T80.
+
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+- [2026-10-22T01:35:00Z] feature — the dropped items are DRAWN, so the
+  operator's "not able to collect broken blocks no inventory" is closed on
+  the visual half. T80 (gameplay, `214d4da`) landed the drops and the
+  pack, but a broken block left an **invisible** item on the ground: the
+  player walked over it, the hotbar count went up, and nothing was ever
+  drawn. `src/render/drops.ts` draws each drop as a 0.25-of-a-block cube
+  wearing the texture of the block it came from, rebuilt on a diff of the
+  item ids and never on a wall clock; the pickup chime fires when the pack
+  grows across `session.update()`. The guard that catches a drop that is
+  not drawn is `e2e/drops-visual.spec.ts` (3 tests): the renderer's mesh
+  count must match the session's, the mesh must wear one atlas cell, and
+  the drop's **pixels** must be textured in a real screenshot — the last
+  being the only check that cannot pass on a mesh nobody can see.
+  Verified the guard can fail (removing the one call makes it fail with
+  "the renderer must DRAW the item the session dropped"). Evidence:
+  commit `1a9801f` on `feature/render/m1`; `npm run check` ALL GREEN 6/6
+  exit 0; `npm run build` exit 0; 3 browser guards pass in real headless
+  Chromium — M1
