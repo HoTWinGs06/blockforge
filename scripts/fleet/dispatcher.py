@@ -44,6 +44,7 @@ Usage:
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import subprocess
@@ -380,6 +381,29 @@ def reap_completed() -> None:
     clean. A conflict is logged and left for a human - the dispatcher never
     resolves a conflict on its own.
     """
+    # The reap now runs on EVERY pass, so two passes can overlap: the cron
+    # fires every 2 minutes and a merge is not instant. Two reaps merging
+    # into the same repo at once fight over the index, and one of them
+    # aborts the other's merge. One reap at a time, same flock the board
+    # uses for its own writes.
+    FLEET.mkdir(parents=True, exist_ok=True)
+    lock_fh = (FLEET / "reap.lock").open("a+")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_fh.close()
+        log("reap: another reap is in progress, skipping")
+        return
+
+    try:
+        _reap_locked()
+    finally:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+
+
+def _reap_locked() -> None:
+    """The body of reap_completed, run under the reap lock."""
     tasks = board_tasks()
     done_by_owner: dict[str, list[dict]] = {}
     for t_ in tasks:
