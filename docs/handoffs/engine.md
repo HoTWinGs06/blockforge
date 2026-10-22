@@ -826,3 +826,109 @@ agent produces a content conflict that strands the role's whole branch.
 >   existing tests still pass, and the two new assertions in
 >   `scripts/selfcheck/engineCheck.ts` FAIL on the old code and PASS on
 >   this one. Commit 773de42. — M1
+
+
+---
+
+## T97 — the dispatcher's automatic reap could NEVER run: three bugs, one silent
+
+Commit `1d0836d` on `feature/engine/m1`. The board filed this as one bug
+("reap_completed() sits after an early return"). It is three, and the filed
+one is the LEAST important — fixing only the early return would have turned
+a silent no-op into a loud NameError, and the reap would still never have
+run.
+
+**THE THREE BUGS, all in `scripts/fleet/dispatcher.py`:**
+
+1. **`INTEGRATED` does not exist.** The constant is `INTEGRATED_BRANCH`
+   (line 60). Every use of the bare name in `reap_completed()` raised
+   `NameError`, and the first one is on the very first statement of the
+   function body — so the function could not do anything at all. Five uses:
+   lines 394, 398, 403, 404, 411.
+2. **`REPO` does not exist either.** The merge target was an undefined name
+   (lines 407, 409, 413), so with bug 1 fixed the merge itself would have
+   raised NameError on the next statement.
+3. **The early return.** `reap_completed()` was called at the END of
+   `main()`, after `if running >= MAX_CONCURRENT: return 0`. At fleet
+   capacity — which is most of the time, 358 of 399 logged passes — the
+   reap was never reached.
+
+**THE FIX.** The undefined names are replaced with the real constants
+(`INTEGRATED_BRANCH`), `REPO` is defined as the canonical repo, and the
+reap now runs FIRST on every pass, before any early return. Reaping is a
+`git merge`, not an agent: it does not compete for the agent slot budget
+that the early return is protecting, which is exactly why the board's
+recommendation was right and the code did not match it.
+
+**ONE MORE THING I ADDED, because arming the reaper makes it matter:** the
+reap refuses to run unless the canonical repo is actually checked out on
+`feature/integrated/m1`. `git merge` lands in the repo's CHECKED-OUT branch,
+so on any other branch — `main`, in the one case that would be catastrophic
+— the reap would have silently merged role work into it with no human
+watching. It now logs `skip reap: ... is on <branch>` and does nothing.
+
+**HOW I VERIFIED IT (measured, not asserted):**
+
+- An AST scope check I wrote reports **8 undefined names in the old file**
+  (`INTEGRATED` x5, `REPO` x3) and **0 in the new one**. I ran the same
+  checker on both files so it is a comparison, not a claim. (An earlier
+  version of that checker was itself wrong — it ignored module-level
+  globals and flagged `os`, `Path`, `time` — I fixed it before trusting it,
+  and re-ran it against the ORIGINAL file to confirm it actually catches
+  the real bug.)
+- `python3 -m py_compile` passes on the new file.
+- **The NameError is visible in the fleet's own log, at the exact place the
+  code predicts.** `~/.hermes/fleet/cron.log` at `2026-10-22T01:34:01` and
+  `01:38:01` shows `DISPATCHED T101 -> testauthor` / `DISPATCHED T97 ->
+  engine` and THEN the traceback: `File ".../dispatcher.py", line 491, in
+  main / reap_completed() / line 394, in reap_completed / if not branch or
+  branch in ("main", INTEGRATED): / NameError: name 'INTEGRATED' is not
+  defined`. That is a pass where the fleet was NOT at capacity, so the
+  dispatch happened, `main()` fell through to the reap, and the reap died
+  on its first statement. 15 tracebacks in the log, every one of them this
+  same NameError.
+- `grep -c REAPED ~/.hermes/fleet/dispatcher.log` = **0**. The automatic
+  reap has never once run in this fleet's life, which is the symptom the
+  board filed.
+
+**THE BLAST RADIUS, MEASURED BEFORE ARMING IT.** Merging role branches into
+the integrated branch is not something to turn on without knowing what it
+does, so I dry-ran the whole reaper sequence in a scratch clone
+(`git clone --no-hardlinks` of the canonical repo, so nothing real was
+touched). All five role branches merge CLEANLY, in the reaper's own order:
+engine (5 ahead) -> netcode (3) -> gameplay (11) -> redteam (14) ->
+render (9), ending at `0d64291`. No conflicts. The one thing I did NOT
+want to do on a shared 2-CPU box was run a full gate suite while a
+Playwright suite was already running on it, so I ran the gate chain on the
+merged scratch tree and read the result back — see the note below.
+
+**WHAT THIS DOES NOT FIX, and who owns it.** This makes the reaper WORK. It
+does not make the reaper SMART: the reaper still merges a role's whole
+branch on the strength of ONE done task, so it can land a half-finished
+task's commits alongside a finished one. The board's own note flagged this
+("the reap merges with 'git -C REPO merge --no-edit branch' and leaves a
+conflict for a human"). That is a policy question about the fleet, not a
+bug in one function, and it is the ARCHITECT's or the leader's to decide —
+I fixed the mechanism, I did not redesign the policy. Also unchanged: a
+conflicting reap is still logged and left for a human, which is now the
+right behaviour, because the reap will actually run and surface conflicts
+every pass instead of never.
+
+**THE DEPLOYMENT GAP NOBODY HAS NOTICED.** The cron does NOT run the repo
+copy. `crontab -l` runs `/home/hermes/workspace/fleet-dispatcher.py` — a
+SEPARATE file outside the repo, which was byte-identical to the repo copy
+when I started (I diffed them: identical). A fix committed to the repo
+therefore does NOTHING for the running fleet until that outside file is
+updated too. **I have NOT edited `~/workspace/fleet-dispatcher.py`** — it
+is outside the repo, outside my branch, and outside my worktree, and
+changing the file the live cron executes is a call for whoever owns the
+host, not for me editing my own branch. The fix is committed and ready; the
+deploy is a one-line copy that the leader should make deliberately, with
+the reap's behaviour watched on the first pass.
+
+**WHY THIS TASK WAS NOT A ONE-LINE MOVE.** The board's note said "move the
+reap_completed() call to BEFORE the early return". I did that, and it is
+necessary, but on its own it would have made the fleet log a NameError
+traceback on every single pass instead of a quiet "pass: 2 agent(s)
+already running" — the reap would still never have run, and the symptom
+would have looked like progress. The two undefined names had to go first.
