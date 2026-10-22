@@ -23,9 +23,11 @@ import {
   aabbIntersects,
   bodyAabb,
   createJumpState,
+  isFluidBlock,
   moveWithCollisions,
   stepJumpAssist,
   stepPhysics,
+  swimVelocity,
   type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
@@ -340,10 +342,19 @@ export class Game {
     this.onGround = result.onGround;
   }
 
-  /** The engine's physics needs a world to collide against. */
+  /**
+   * The engine's physics needs a world to collide against.
+   *
+   * It also needs to know where the water is, so the player floats and
+   * swims instead of sinking through the tidewater. The bridge already
+   * answers "what block is at this position", so the fluid test is a
+   * question about that block.
+   */
   private solidWorld(): SolidWorld {
     return {
       isSolid: (x: number, y: number, z: number): boolean => this.engine.isSolid(x, y, z),
+      isFluid: (x: number, y: number, z: number): boolean =>
+        isFluidBlock(this.engine.blockAt(x, y, z)),
     };
   }
 
