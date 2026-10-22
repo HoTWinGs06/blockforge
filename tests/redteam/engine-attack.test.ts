@@ -115,25 +115,29 @@ describe("engine core — RED-TEAM attacks (T44-T47, T88)", () => {
     expect(valueNoise2(5, 0, 2147483648)).not.toBe(valueNoise2(5, 0, -2147483648));
   });
 
-  // ── E5: the SEED still aliases at the RNG layer ────────────────────────
-  // The engine's T47 fix (c97eb34) covered the NOISE layer: the lattice and
-  // the noise seed are now folded from both 32-bit halves. It deliberately did
-  // NOT cover src/core/rng.ts, which still does `this.seed = seed >>> 0`.
-  // So two seeds 2^32 apart are the same stream, and the terrain that the
-  // noise layer separates is re-joined by everything the RNG drives.
+  // ── E5: the SEED must not alias at the RNG layer ──────────────────────
+  // This used to be a live finding: the engine's T47 fix (c97eb34) covered
+  // the NOISE layer, but src/core/rng.ts still did `this.seed = seed >>> 0`,
+  // so two seeds 2^32 apart were the same stream and World.hash() mixed
+  // only the low half - breaking its own docstring promise.
+  //
+  // The engine's T98 fix (6860e91) closes it: rng.ts folds the high half
+  // too, and world.ts mixes the seed in as eight bytes. So these are now
+  // PLAIN REGRESSION GUARDS, not armed stubs - an armed it.fails() for a
+  // finding that has been fixed is a stale alarm, and it is what breaks
+  // the build. They stay armed only while the bug is still there.
   it("control: the seed probe is live — nearby seeds do NOT alias", () => {
     expect(rngStream(0)).not.toBe(rngStream(1));
   });
 
-  it.fails("E5: the RNG must not alias two seeds that differ by 2^32", () => {
+  it("E5: the RNG must not alias two seeds that differ by 2^32", () => {
     expect(rngStream(4294967296)).not.toBe(rngStream(0));
   });
 
-  it.fails("E5: two worlds with different seeds must never hash the same", () => {
+  it("E5: two worlds with different seeds must never hash the same", () => {
     // World.hash()'s own docstring promises exactly this: "The SEED is
     // mixed in first, so two worlds with different seeds can never hash the
-    // same however few chunks they have loaded." It mixes `seed >>> 0`, so
-    // the promise is false for any pair of seeds 2^32 apart.
+    // same however few chunks they have loaded."
     expect(new World(4294967296).hash()).not.toBe(new World(0).hash());
   });
 });
