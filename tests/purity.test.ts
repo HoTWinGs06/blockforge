@@ -188,6 +188,41 @@ describe("PRIORITY 1: the purity scanner PROVES IT CAN FAIL", () => {
     expect(rulesFor("let e: HTMLElement;\n")).toContain("dom-global");
   });
 
+  it("T4: catches a DOM global reached through globalThis", () => {
+    // The DOM-global rule matched a bare Identifier, so `globalThis.window` -
+    // a PropertyAccessExpression whose `window` is a property NAME and not an
+    // identifier reference - slipped through the guard entirely. RED-TEAM
+    // found it by execution (T99).
+    expect(rulesFor("const w = globalThis.window;\n")).toContain("dom-global");
+    expect(rulesFor("const d = globalThis.document;\n")).toContain("dom-global");
+    expect(rulesFor("const s = globalThis.localStorage;\n")).toContain("dom-global");
+    expect(rulesFor("const w = globalThis['window'];\n")).toContain("dom-global");
+  });
+
+  it("T4: catches a DOM global destructured off globalThis", () => {
+    // Same dependency, a different spelling: the bound identifier is a
+    // local declaration, so the identifier rule skips it.
+    expect(rulesFor("const { window } = globalThis;\n")).toContain("dom-global");
+    expect(rulesFor("const { localStorage } = globalThis;\n")).toContain("dom-global");
+    expect(rulesFor("const { window: w } = globalThis;\n")).toContain("dom-global");
+  });
+
+  it("T4: does NOT flag a DOM global reached through some other object", () => {
+    // The negative direction: only the REAL global object is a DOM
+    // dependency. `foo.window` is somebody else's property, and a locally
+    // declared `globalThis` shadows the real one.
+    expect(rulesFor("const x = foo.window;\n")).toEqual([]);
+    expect(rulesFor("const x = obj.globalThis.window;\n")).toEqual([]);
+    expect(rulesFor("const x = globalThis.foo;\n")).toEqual([]);
+    expect(
+      rulesFor("const globalThis = { window: 1 };\nconst x = globalThis.window;\n"),
+    ).toEqual([]);
+    expect(rulesFor("const { window } = someOtherObject;\n")).toEqual([]);
+    // A RENAMED binding reads the property `window` off whatever it
+    // destructures, so the name is a property and not the global.
+    expect(rulesFor("const { window: w } = someOtherObject;\n")).toEqual([]);
+  });
+
   it("catches a network call", () => {
     expect(rulesFor('fetch("/x");\n')).toContain("network");
     expect(rulesFor('const w = new WebSocket("ws://x");\n')).toContain("network");

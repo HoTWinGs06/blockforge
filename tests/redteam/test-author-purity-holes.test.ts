@@ -139,12 +139,19 @@ describe("T4 — a DOM global reached through globalThis is still a DOM dependen
     expect(rulesFor("const w = window;")).toContain("dom-global");
   });
 
-  it.fails("T4: globalThis.window must be caught like a bare window", () => {
-    // The scanner matches BANNED_DOM_GLOBALS on a bare Identifier node, so
-    // `globalThis.window` — a PropertyAccessExpression — slips through, even
-    // though it is exactly as much a DOM dependency as `window`. The same
-    // asymmetry does NOT apply to calls: `globalThis.Date.now()` IS caught,
+  it("T4: globalThis.window must be caught like a bare window", () => {
+    // This used to be a live finding: the scanner matched BANNED_DOM_GLOBALS
+    // on a bare Identifier node, so `globalThis.window` - a
+    // PropertyAccessExpression whose `window` is a property NAME and not an
+    // identifier reference - slipped through the guard entirely. The same
+    // asymmetry did NOT apply to calls: `globalThis.Date.now()` WAS caught,
     // because the scanner resolves the dotted callee name.
+    //
+    // The TEST AUTHOR's fix (T99) reports the property name when the object
+    // of a property access is the identifier `globalThis`. So this is now a
+    // PLAIN REGRESSION GUARD, not an armed stub: an armed it.fails() for a
+    // finding that has been fixed is a stale alarm, and it is what breaks the
+    // build. It stays armed only while the bug is still there.
     expect(rulesFor("const w = globalThis.window;")).toContain("dom-global");
   });
 });

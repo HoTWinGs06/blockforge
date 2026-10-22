@@ -165,7 +165,7 @@ export const FINDINGS: readonly Finding[] = [
       "Engine src/core/rng.ts still truncates the SEED to 32 bits - createRng(2^32) and createRng(0) are the same stream, and two worlds with those seeds hash the same",
     owner: "hermes-linux",
     boardTask: "T98",
-    status: "open",
+    status: "closed",
     severity: "medium",
     promise:
       "A world seed is a number, and World.hash() documents that 'two worlds with different seeds can never hash the same however few chunks they have loaded'.",
@@ -178,12 +178,12 @@ export const FINDINGS: readonly Finding[] = [
       "The TEST AUTHOR's purity scanner matches DOM globals on a bare identifier, so globalThis.window slips through",
     owner: "antigravity",
     boardTask: "T99",
-    status: "open",
+    status: "closed",
     severity: "low",
     promise:
       "src/core/ must not touch the DOM; a DOM global reached through globalThis is exactly as much a DOM dependency as a bare one.",
     repro:
-      "rulesFor('const w = globalThis.window;') reports no violation, while rulesFor('const w = window;') reports 'dom-global'.",
+      "rulesFor('const w = globalThis.window;') reported no violation, while rulesFor('const w = window;') reported 'dom-global'.",
   },
 ];
 

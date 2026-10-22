@@ -170,6 +170,60 @@ function lastSegment(name: string): string {
 }
 
 /**
+ * The property name read off the global object, e.g. `window` for
+ * `globalThis.window` or `globalThis["window"]`.
+ *
+ * `globalThis.window` is as much a DOM dependency as a bare `window`, but
+ * the `window` in it is a property NAME and not an identifier reference, so
+ * the identifier rule can never see it. The object must be the identifier
+ * `globalThis` itself: `foo.window` is somebody else's property.
+ *
+ * shortcut: an ALIASED global (`const g = globalThis; g.window`) is not
+ * detected — that needs flow analysis, not a syntactic rule. Upgrade to a
+ * scope-and-flow walk only if a core file ever hides a DOM global that way.
+ */
+function globalThisPropertyName(node: ts.Node): string | undefined {
+  if (ts.isPropertyAccessExpression(node)) {
+    return ts.isIdentifier(node.expression) && node.expression.text === "globalThis"
+      ? node.name.text
+      : undefined;
+  }
+  if (
+    ts.isElementAccessExpression(node) &&
+    node.argumentExpression !== undefined &&
+    ts.isStringLiteral(node.argumentExpression)
+  ) {
+    return ts.isIdentifier(node.expression) && node.expression.text === "globalThis"
+      ? node.argumentExpression.text
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The DOM globals pulled off the global object by a destructuring
+ * declaration, e.g. `window` for `const { window } = globalThis`.
+ *
+ * The bound identifier is a local declaration, so the identifier rule skips
+ * it, but the value it holds is the DOM global all the same.
+ */
+function destructuredGlobalNames(node: ts.VariableDeclaration): string[] {
+  const initializer = node.initializer;
+  if (initializer === undefined) return [];
+  if (!ts.isIdentifier(initializer) || initializer.text !== "globalThis") return [];
+  if (!ts.isObjectBindingPattern(node.name)) return [];
+
+  const names: string[] = [];
+  for (const element of node.name.elements) {
+    if (!ts.isBindingElement(element)) continue;
+    // `{ window: w }` reads `window` and binds it to `w`.
+    const source = element.propertyName ?? element.name;
+    if (ts.isIdentifier(source)) names.push(source.text);
+  }
+  return names;
+}
+
+/**
  * Every name a file declares locally: variables, parameters, functions,
  * classes and imports.
  *
@@ -253,6 +307,12 @@ function isGlobalReference(node: ts.Identifier, shadowed: ReadonlySet<string>): 
       ts.isBindingElement(parent)) &&
     parent.name === node
   ) {
+    return false;
+  }
+
+  // `{ window: w }` — a renamed binding reads the property `window` off
+  // whatever it destructures, so the name is a property and not the global.
+  if (ts.isBindingElement(parent) && parent.propertyName === node) {
     return false;
   }
 
@@ -391,6 +451,36 @@ export function scanSource(
           node.text,
           "DOM and storage globals do not exist in Node and make core impure.",
         );
+      }
+    }
+
+    // `globalThis.window` — a DOM global reached through the global object.
+    // The `window` in it is a property NAME, not an identifier reference, so
+    // the rule above cannot see it. A locally declared `globalThis` shadows
+    // the real one and is somebody else's object.
+    if (!shadowed.has("globalThis")) {
+      const property = globalThisPropertyName(node);
+      if (property !== undefined && BANNED_DOM_GLOBALS.has(property)) {
+        report(
+          "dom-global",
+          node,
+          `globalThis.${property}`,
+          "DOM and storage globals do not exist in Node and make core impure.",
+        );
+      }
+    }
+
+    // `const { window } = globalThis` — the same dependency, destructured.
+    if (ts.isVariableDeclaration(node) && !shadowed.has("globalThis")) {
+      for (const name of destructuredGlobalNames(node)) {
+        if (BANNED_DOM_GLOBALS.has(name)) {
+          report(
+            "dom-global",
+            node,
+            `globalThis.${name}`,
+            "DOM and storage globals do not exist in Node and make core impure.",
+          );
+        }
       }
     }
 
