@@ -34,7 +34,7 @@ import {
   JUMP_BUFFER_TICKS,
 } from "../../src/core/physics.js";
 import { fbm2, valueNoise2, valueNoise3 } from "../../src/core/noise.js";
-import { createRng } from "../../src/core/rng.js";
+import { createRng, createRngFromState } from "../../src/core/rng.js";
 import { BlockId, SOLID_BLOCKS } from "../../src/core/types.js";
 import { CHUNK_SIZE_Y, blockIndex } from "../../src/core/constants.js";
 
@@ -679,6 +679,80 @@ const world = {
     );
     check("a body in mid-air does not step up", Math.abs(r.position.y - 1.2) < 1e-9, `y=${r.position.y}`);
   }
+}
+
+// 10. The seed is NOT truncated to 32 bits (RED-TEAM E5, board T98).
+// `this.seed = seed >>> 0` made createRng(2^32) and createRng(0) the SAME
+// stream, and two worlds with those seeds hashed the same - which
+// falsified World.hash()'s own docstring promise.
+{
+  const stream = (seed: number): string => {
+    const rng = createRng(seed);
+    const draws: number[] = [];
+    for (let i = 0; i < 4; i++) draws.push(rng.nextUint32());
+    return draws.join(",");
+  };
+
+  const zero = stream(0);
+  const twoTo32 = stream(4294967296);
+  check(
+    "seeds 2^32 apart produce different streams",
+    zero !== twoTo32,
+    `${zero} vs ${twoTo32}`,
+  );
+
+  const nearby = stream(1);
+  check("nearby seeds do not alias", zero !== nearby);
+
+  // Every seed a world can be created with must have its own stream.
+  const seeds = [0, 1, 42, 4294967295, 4294967296, 4294967297, 8589934592];
+  const streams = seeds.map(stream);
+  check(
+    "no two distinct seeds share a stream",
+    new Set(streams).size === seeds.length,
+    `${new Set(streams).size}/${seeds.length}`,
+  );
+
+  // Forks carry the parent's high half too, so two parents 2^32 apart do
+  // not hand their subsystems the same child stream.
+  const childA = createRng(0).fork("terrain");
+  const childB = createRng(4294967296).fork("terrain");
+  const draw = (rng: ReturnType<typeof createRng>): string => {
+    const out: number[] = [];
+    for (let i = 0; i < 4; i++) out.push(rng.nextUint32());
+    return out.join(",");
+  };
+  check(
+    "forks of seeds 2^32 apart differ",
+    draw(childA) !== draw(childB),
+    `${draw(childA)} vs ${draw(childB)}`,
+  );
+
+  // The world hash must not alias either: its own docstring promises that
+  // two worlds with different seeds never hash the same.
+  const hashA = new World(0).hash();
+  const hashB = new World(4294967296).hash();
+  check(
+    "worlds with seeds 2^32 apart hash differently",
+    hashA !== hashB,
+    `${hashA} vs ${hashB}`,
+  );
+
+  // The seed survives a checkpoint/restore with its high half intact.
+  const rng = createRng(4294967296);
+  rng.nextUint32();
+  const snapshot = rng.getState();
+  const restored = createRngFromState(snapshot);
+  check(
+    "a checkpoint of a large seed restores exactly",
+    draw(rng) === draw(restored),
+    `${draw(rng)} vs ${draw(restored)}`,
+  );
+  check(
+    "a checkpoint keeps the full seed",
+    snapshot.seed === 4294967296,
+    String(snapshot.seed),
+  );
 }
 
 if (failures > 0) {

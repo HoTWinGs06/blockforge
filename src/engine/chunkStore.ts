@@ -142,10 +142,13 @@ export class ChunkStore implements SolidWorld, RaycastWorld {
   /**
    * A hash of the loaded chunks.
    *
-   * The SEED is mixed in first, so two stores with different seeds can never
-   * hash the same however few chunks they have loaded. Chunks are then hashed
-   * in key order with their block bytes, so the value depends on the world's
-   * content and not on the order it was built in.
+   * The SEED is mixed in first, as EIGHT little-endian bytes - the low 32
+   * bits and then the high 32 bits - so two stores with different seeds
+   * never hash the same however few chunks they have loaded. (Mixing only
+   * the low half made a seed and that seed 2^32 apart hash identically.)
+   * Chunks are then hashed in key order with their block bytes, so the
+   * value depends on the world's content and not on the order it was built
+   * in.
    */
   hash(): string {
     let h = 0x811c9dc5;
@@ -153,11 +156,16 @@ export class ChunkStore implements SolidWorld, RaycastWorld {
       h ^= byte & 0xff;
       h = Math.imul(h, 0x01000193);
     };
-    const seed = this.seed >>> 0;
-    mix(seed & 0xff);
-    mix((seed >>> 8) & 0xff);
-    mix((seed >>> 16) & 0xff);
-    mix((seed >>> 24) & 0xff);
+    const low = this.seed >>> 0;
+    const high = Math.floor(this.seed / 4294967296) | 0;
+    mix(low & 0xff);
+    mix((low >>> 8) & 0xff);
+    mix((low >>> 16) & 0xff);
+    mix((low >>> 24) & 0xff);
+    mix(high & 0xff);
+    mix((high >>> 8) & 0xff);
+    mix((high >>> 16) & 0xff);
+    mix((high >>> 24) & 0xff);
     for (const chunk of this.loadedChunks()) {
       for (const char of chunkKeyToString(chunk.key)) {
         mix(char.charCodeAt(0));

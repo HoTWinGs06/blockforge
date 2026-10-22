@@ -552,10 +552,13 @@ export class World {
   /**
    * A hash of the whole world.
    *
-   * The SEED is mixed in first, so two worlds with different seeds can never
-   * hash the same however few chunks they have loaded. Loaded chunks then
-   * contribute their key and their bytes, in key order, so the hash depends
-   * on the world content and not on the order it was built in.
+   * The SEED is mixed in first, as EIGHT little-endian bytes - the low 32
+   * bits and then the high 32 bits - so two worlds with different seeds
+   * never hash the same however few chunks they have loaded. (Mixing only
+   * the low half made a seed and that seed 2^32 apart hash identically.)
+   * Loaded chunks then contribute their key and their bytes, in key order,
+   * so the hash depends on the world content and not on the order it was
+   * built in.
    *
    * This is the value gate G6 compares across processes.
    */
@@ -565,12 +568,19 @@ export class World {
       h ^= byte & 0xff;
       h = Math.imul(h, 0x01000193);
     };
-    // The seed, as four little-endian bytes.
-    const seed = this.seed >>> 0;
-    mix(seed & 0xff);
-    mix((seed >>> 8) & 0xff);
-    mix((seed >>> 16) & 0xff);
-    mix((seed >>> 24) & 0xff);
+    // The seed, as eight little-endian bytes: the low half, then the high
+    // half. The high half is a separate word so a seed and that seed 2^32
+    // apart cannot produce the same hash.
+    const low = this.seed >>> 0;
+    const high = Math.floor(this.seed / TWO_POW_32) | 0;
+    mix(low & 0xff);
+    mix((low >>> 8) & 0xff);
+    mix((low >>> 16) & 0xff);
+    mix((low >>> 24) & 0xff);
+    mix(high & 0xff);
+    mix((high >>> 8) & 0xff);
+    mix((high >>> 16) & 0xff);
+    mix((high >>> 24) & 0xff);
     for (const chunk of this.loadedChunks()) {
       for (const char of chunkKeyToString(chunk.key)) {
         mix(char.charCodeAt(0));
