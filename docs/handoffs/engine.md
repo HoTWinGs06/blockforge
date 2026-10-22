@@ -1134,3 +1134,21 @@ Two world hashes recorded centrally are now stale (see above). Any save file
 or replay that pins an old hash value would need regenerating — there are
 none in the tree; the only consumers are the G6 script and the renderer's
 canonical-chunk hash, and neither stores a hash on disk.
+
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+- [2026-10-22T04:28:00+0000] bugfix — the seed is no longer truncated to 32
+  bits, so two world seeds 2^32 apart no longer share one RNG stream and no
+  longer hash the same — evidence: `createRng(4294967296)` and `createRng(0)`
+  produced the identical stream `1684164658,3653269916,2939563536,2141751570`
+  and `new World(4294967296).hash() === new World(0).hash() === '4b95f515'`;
+  now `createRng(2^32)` and `createRng(0)` differ, `World(2^32).hash() !==
+  World(0).hash()`, and the two armed `it.fails` stubs in
+  `tests/redteam/engine-attack.test.ts` (E5) FLIP RED, which is the designed
+  closure signal — no existing world moved: `scripts/selfcheck/rngCompatCheck.ts`
+  compares the new stream against the OLD algorithm draw-for-draw (parent +
+  five forked children, fifteen seeds, zero draws differ) — commit `6860e91`
+  on `feature/engine/m1` — M1
