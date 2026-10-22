@@ -397,3 +397,23 @@ fix is safe to make. GAMEPLAY owns the file; I am not editing it.
 branches, 74.68% lines) and it is what keeps the project-wide BRANCH
 number at 89.63% rather than in the mid-90s. The next coverage task will
 get more headroom by covering physics than by covering anything else.
+
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+It is here rather than appended to `docs/VICTORIES.md` for the same reason
+as the engine's T46/T47 and the render's T94 entries: a concurrent append
+from a second agent produces a CONTENT CONFLICT, and the dispatcher's reap
+skips any merge that conflicts, so an append from a role branch can strand
+the role's own work.
+
+```
+[2026-10-22T04:55:00Z] test - src/core/crafting is covered and the 85%
+coverage floor (gate G1) is GREEN again - the floor went 76.38% -> 95.08%
+lines / 94.55% stmts / 94.59% funcs / 89.63% branches, and src/core/crafting
+itself is at 100% lines / 100% stmts / 100% funcs / 97.7% branches - the
+suite is MUTATION-PROVEN (6 of 6 behavioural mutants CAUGHT; the 7th is
+PROVEN an equivalent mutant by a byte-identical 527-grid differential
+sweep, so green there is correct) and two of its tests sweep EVERY possible
+2x2 and 3x3 grid - commit d1fb8a8, 405 passed / 3 expected fail / 0 failed,
+`npm run verify` ALL GREEN on all eight steps - M3
+```
