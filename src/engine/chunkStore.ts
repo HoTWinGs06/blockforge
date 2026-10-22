@@ -27,6 +27,7 @@ import { meshChunk, meshSection } from "../core/meshing.js";
 import type { ChunkNeighbours } from "../core/world.js";
 import type { RaycastWorld } from "../core/raycast.js";
 import type { SolidWorld } from "../core/physics.js";
+import { isFluidBlock } from "../core/physics.js";
 
 /**
  * A cache of generated chunks with world-space access.
@@ -118,6 +119,19 @@ export class ChunkStore implements SolidWorld, RaycastWorld {
       return true; // the world floor
     }
     return SOLID_BLOCKS.has(this.getBlockAt(x, y, z));
+  }
+
+  /**
+   * True when the block at world coordinates is a fluid a body can be in.
+   *
+   * Tidewater is not solid, so a body can be inside it - and then it floats
+   * and swims. A world that cannot answer has no fluids.
+   */
+  isFluid(x: number, y: number, z: number): boolean {
+    if (y < 0) {
+      return false;
+    }
+    return isFluidBlock(this.getBlockAt(x, y, z));
   }
 
   /** The four horizontal neighbours of a chunk, for the mesher. */

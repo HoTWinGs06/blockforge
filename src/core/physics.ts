@@ -16,13 +16,87 @@
  * a body resting on the floor has its feet exactly on the floor's top face
  * (y = 1 for a block at y = 0) instead of a fraction above it.
  */
-import { SOLID_BLOCKS } from "./types.js";
+import { BlockId, SOLID_BLOCKS } from "./types.js";
 import type { Aabb, Vec3 } from "./types.js";
 
 /** Blocks per second the player falls, before terminal velocity. */
 export const GRAVITY = 28;
 /** Fall speed cap, in blocks per second. */
 export const TERMINAL_VELOCITY = 60;
+
+/**
+ * The upward acceleration from buoyancy, per unit of submersion.
+ *
+ * Buoyancy REPLACES gravity in water. The water carries the submerged share
+ * of the body's weight, so a body that is fully under the water is held
+ * level by it: it neither sinks through the sea nor shoots out of it. The
+ * dry share still falls, which is why a body whose head is out of the water
+ * settles back down.
+ *
+ * Equal to gravity, so a body that is fully submerged has no net pull at
+ * all - it HOLDS its depth, and the rise control is what carries it to the
+ * surface.
+ */
+export const WATER_BUOYANCY = GRAVITY;
+
+/**
+ * The fastest a body moves up or down in water, in blocks per second.
+ *
+ * Far below the terminal velocity in air, so falling into water is a slow
+ * glide rather than a plunge, and a swim stroke is a stroke and not a launch.
+ */
+export const WATER_TERMINAL_VELOCITY = 4;
+
+/**
+ * How strongly water resists motion, per second.
+ *
+ * Water is thick: it damps the bobbing of a body holding its depth, and it
+ * is what makes a swimmer coast to a stop instead of sliding on forever.
+ */
+export const WATER_DRAG = 4;
+
+/**
+ * How fast a swimmer accelerates, in blocks per second squared.
+ */
+export const SWIM_ACCELERATION = 20;
+
+/**
+ * How fast a swimmer moves, in blocks per second.
+ *
+ * Slower than walking: swimming is effort, not a stroll.
+ */
+export const SWIM_SPEED = 2.2;
+
+/**
+ * The upward acceleration of a swim stroke, in blocks per second squared.
+ *
+ * This is what lifts a body to the surface. It is scaled by how much of the
+ * body is under water, so the stroke fades out as the body leaves the water
+ * instead of firing it out of the world.
+ */
+export const SWIM_RISE_ACCELERATION = GRAVITY;
+
+/**
+ * The speed of a current in moving water, in blocks per second.
+ */
+export const FLOW_SPEED = 0.8;
+
+/**
+ * How far the current looks for a deeper floor beside the body, in blocks.
+ *
+ * shortcut: the current is a local slope, not a simulation of the whole
+ * water body. Raise this if a body should follow a channel further than
+ * sixteen blocks.
+ */
+const FLOW_PROBE_DEPTH = 16;
+
+/** The four horizontal directions, for the current probe. */
+const FLOW_DIRECTIONS: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
 
 /** Half-width of the player's collision box. */
 export const PLAYER_HALF_WIDTH = 0.3;
@@ -65,6 +139,13 @@ const MAX_MOVE_STEP = 0.5;
 export interface SolidWorld {
   /** True when the block at the given integer coordinates is solid. */
   isSolid(x: number, y: number, z: number): boolean;
+  /**
+   * True when the block at the given integer coordinates is a fluid.
+   *
+   * OPTIONAL: a world that cannot answer has no fluids, so a body in it
+   * behaves exactly as it always did - no buoyancy, no drag, no swimming.
+   */
+  isFluid?(x: number, y: number, z: number): boolean;
 }
 
 /** The result of a movement step. */
@@ -419,28 +500,255 @@ function moveOnce(
   };
 }
 
+// ── water ─────────────────────────────────────────────────────
+
 /**
- * Advance a body by one timestep: apply gravity, then move and resolve.
+ * True when the block is a fluid a body floats and swims in.
+ *
+ * Tidewater is the sea. It is NOT solid, so a body can be inside it, and
+ * the physics asks about it separately to know when buoyancy applies.
+ */
+export function isFluidBlock(id: BlockId): boolean {
+  return id === BlockId.Tidewater;
+}
+
+/**
+ * How much of a body is under water, from 0 (dry) to 1 (submerged).
+ *
+ * It is the fraction of the body's volume that sits in fluid blocks, so it
+ * is CONTINUOUS: a body rising out of the water is measured wet, then less
+ * wet, then dry. A world that cannot answer isFluid has no fluids at all.
+ */
+export function submersion(box: Aabb, world: SolidWorld): number {
+  const isFluid = world.isFluid;
+  if (!isFluid) {
+    return 0;
+  }
+  const volume =
+    (box.maxX - box.minX) * (box.maxY - box.minY) * (box.maxZ - box.minZ);
+  if (volume <= 0) {
+    return 0;
+  }
+  const [minX, maxX] = blockRange(box.minX, box.maxX);
+  const [minY, maxY] = blockRange(box.minY, box.maxY);
+  const [minZ, maxZ] = blockRange(box.minZ, box.maxZ);
+  let wet = 0;
+  for (let y = minY; y <= maxY; y++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (!isFluid(x, y, z)) {
+          continue;
+        }
+        const overlapX = Math.min(box.maxX, x + 1) - Math.max(box.minX, x);
+        const overlapY = Math.min(box.maxY, y + 1) - Math.max(box.minY, y);
+        const overlapZ = Math.min(box.maxZ, z + 1) - Math.max(box.minZ, z);
+        if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
+          wet += overlapX * overlapY * overlapZ;
+        }
+      }
+    }
+  }
+  return Math.min(1, wet / volume);
+}
+
+/**
+ * How deep the water goes below a block, in blocks.
+ *
+ * The count stops at the first non-fluid block, so it is the depth of the
+ * water column under that point.
+ */
+function depthBelow(world: SolidWorld, x: number, y: number, z: number): number {
+  const isFluid = world.isFluid;
+  if (!isFluid) {
+    return 0;
+  }
+  let depth = 0;
+  for (let step = 0; step < FLOW_PROBE_DEPTH; step++) {
+    const probe = y - step;
+    if (probe < 0 || !isFluid(x, probe, z)) {
+      break;
+    }
+    depth++;
+  }
+  return depth;
+}
+
+/**
+ * The current at a point, in blocks per second.
+ *
+ * DETERMINISM: this is a PURE FUNCTION OF THE WORLD STATE. It reads the
+ * blocks and nothing else - no clock, no history, no accumulated state - so
+ * the same world always gives the same current, whatever order the bodies
+ * were stepped in. A flow field that depended on the update order would
+ * make the world depend on its own history and break the byte-identical
+ * guarantee the seed gives.
+ *
+ * Water runs into the deep, so the current points at whichever neighbour has
+ * more water under it. Open water is calm; a channel or a drop-off pulls.
+ */
+export function flowAt(world: SolidWorld, x: number, y: number, z: number): Vec3 {
+  const isFluid = world.isFluid;
+  if (!isFluid) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const bx = Math.floor(x);
+  const by = Math.floor(y);
+  const bz = Math.floor(z);
+  if (!isFluid(bx, by, bz)) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const here = depthBelow(world, bx, by, bz);
+  let dirX = 0;
+  let dirZ = 0;
+  let bestDrop = 0;
+  for (const [offsetX, offsetZ] of FLOW_DIRECTIONS) {
+    const drop = depthBelow(world, bx + offsetX, by, bz + offsetZ) - here;
+    if (drop > bestDrop) {
+      bestDrop = drop;
+      dirX = offsetX;
+      dirZ = offsetZ;
+    }
+  }
+  if (bestDrop <= 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const speed = Math.min(FLOW_SPEED, bestDrop * 0.25);
+  return { x: dirX * speed, y: 0, z: dirZ * speed };
+}
+
+/**
+ * The horizontal velocity a body should have this frame.
+ *
+ * ON LAND: the wish itself, exactly - walking is not a negotiation.
+ *
+ * IN WATER: a swim stroke. The body accelerates toward the direction the
+ * player is asking for, up to {@link SWIM_SPEED}, and coasts to a stop when
+ * the player lets go, so a body in water holds its position instead of
+ * sliding on forever. A current, if the world has one, is added on top.
+ */
+export function swimVelocity(
+  position: Vec3,
+  velocity: Vec3,
+  wishX: number,
+  wishZ: number,
+  dt: number,
+  world: SolidWorld,
+  halfWidth = PLAYER_HALF_WIDTH,
+  height = PLAYER_HEIGHT,
+): Vec3 {
+  const wet = submersion(bodyAabb(position, halfWidth, height), world);
+  if (wet <= 0) {
+    return { x: wishX, y: velocity.y, z: wishZ };
+  }
+  const wishLength = Math.hypot(wishX, wishZ);
+  let targetX = 0;
+  let targetZ = 0;
+  if (wishLength > 1e-9) {
+    const speed = Math.min(wishLength, SWIM_SPEED);
+    targetX = (wishX / wishLength) * speed;
+    targetZ = (wishZ / wishLength) * speed;
+  }
+  const flow = flowAt(world, position.x, position.y, position.z);
+  targetX += flow.x;
+  targetZ += flow.z;
+
+  // Water is thick: it damps the stroke, which is what lets a swimmer
+  // settle instead of oscillating.
+  const damp = Math.min(1, WATER_DRAG * dt);
+  let nextX = velocity.x * (1 - damp);
+  let nextZ = velocity.z * (1 - damp);
+
+  // Then the stroke pushes toward the target, never faster than the
+  // swimmer can manage.
+  const dx = targetX - nextX;
+  const dz = targetZ - nextZ;
+  const distance = Math.hypot(dx, dz);
+  const maxStep = SWIM_ACCELERATION * dt;
+  if (distance > maxStep && distance > 0) {
+    nextX += (dx / distance) * maxStep;
+    nextZ += (dz / distance) * maxStep;
+  } else {
+    nextX = targetX;
+    nextZ = targetZ;
+  }
+
+  return { x: nextX, y: velocity.y, z: nextZ };
+}
+
+/**
+ * What a body is trying to do vertically this frame.
+ *
+ * Pure data: the caller decides what the player wants, the physics decides
+ * how the world answers it.
+ */
+export interface StepIntent {
+  /** True while the rise control is held: a jump on land, a stroke in water. */
+  readonly rise?: boolean;
+}
+
+/**
+ * Advance a body VERTICALLY by one timestep: apply gravity, then move and
+ * resolve.
  *
  * `dt` is in seconds. Terminal velocity caps the fall.
+ *
+ * The HORIZONTAL axis belongs to the caller, which moves the body with
+ * {@link moveWithCollisions}. Splitting the two is deliberate: a body that
+ * slides along a wall must not be pushed off it by the vertical step, and
+ * the horizontal move needs its own axis resolution to slide at all.
+ *
+ * IN WATER: buoyancy replaces gravity - the water carries the submerged part
+ * of the body's weight, so a body in deep water is held up instead of
+ * sinking through it - the fall speed is far lower, and holding the rise
+ * control swims the body upward, which is how a player surfaces.
  */
 export function stepPhysics(
   position: Vec3,
   velocity: Vec3,
   dt: number,
   world: SolidWorld,
+  intent?: StepIntent,
   halfWidth = PLAYER_HALF_WIDTH,
   height = PLAYER_HEIGHT,
 ): MoveResult {
-  const accelerated = clampVelocity({
-    x: velocity.x,
-    y: velocity.y - GRAVITY * dt,
-    z: velocity.z,
-  });
+  const wet = submersion(bodyAabb(position, halfWidth, height), world);
+  if (wet <= 0) {
+    const accelerated = clampVelocity({
+      x: velocity.x,
+      y: velocity.y - GRAVITY * dt,
+      z: velocity.z,
+    });
+    return moveWithCollisions(
+      position,
+      accelerated,
+      { x: 0, y: accelerated.y * dt, z: 0 },
+      world,
+      halfWidth,
+      height,
+    );
+  }
+
+  // Buoyancy replaces gravity, in proportion to how much of the body is
+  // under water. The two shares cross at half-submerged, so a body settles
+  // with its head out of the water and holds there - and a body that is
+  // fully under is pushed up rather than sinking through it.
+  const stroke = intent?.rise ? SWIM_RISE_ACCELERATION * wet : 0;
+  let vy = velocity.y + (WATER_BUOYANCY * wet - GRAVITY * (1 - wet) + stroke) * dt;
+
+  // Water is thick: it damps the bobbing, and it caps how fast a body can
+  // move through it in either direction.
+  vy -= vy * Math.min(1, WATER_DRAG * dt);
+  if (vy > WATER_TERMINAL_VELOCITY) {
+    vy = WATER_TERMINAL_VELOCITY;
+  }
+  if (vy < -WATER_TERMINAL_VELOCITY) {
+    vy = -WATER_TERMINAL_VELOCITY;
+  }
+
   return moveWithCollisions(
     position,
-    accelerated,
-    { x: accelerated.x * dt, y: accelerated.y * dt, z: accelerated.z * dt },
+    { x: velocity.x, y: vy, z: velocity.z },
+    { x: 0, y: vy * dt, z: 0 },
     world,
     halfWidth,
     height,
@@ -568,17 +876,28 @@ export function stepJumpAssist(state: JumpState, input: JumpInput): JumpResult {
 /**
  * A world backed by a plain map of solid coordinates. Useful for tests and
  * for the engine's own collision queries.
+ *
+ * The second argument names the FLUID blocks, so a test can put a body in
+ * water. A world with no fluids behaves exactly as it always did.
  */
 export function solidWorldFromBlocks(
   blocks: Iterable<readonly [number, number, number]>,
+  fluids: Iterable<readonly [number, number, number]> = [],
 ): SolidWorld {
   const set = new Set<string>();
   for (const [x, y, z] of blocks) {
     set.add(`${x},${y},${z}`);
   }
+  const wet = new Set<string>();
+  for (const [x, y, z] of fluids) {
+    wet.add(`${x},${y},${z}`);
+  }
   return {
     isSolid(x, y, z) {
       return set.has(`${x},${y},${z}`);
+    },
+    isFluid(x, y, z) {
+      return wet.has(`${x},${y},${z}`);
     },
   };
 }
