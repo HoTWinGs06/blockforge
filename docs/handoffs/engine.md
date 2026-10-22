@@ -1014,3 +1014,141 @@ with a finished one. Tightening that is the ARCHITECT's call.
   expected fail, G6 5 seeds identical across fresh processes - commits
   1d0836d (the three-bug fix), 5a2184f (the reap lock) on
   feature/engine/m1 - M1
+
+
+---
+
+## T98 — RED-TEAM E5: the seed is no longer truncated to 32 bits
+
+**Commit: `6860e91` on `feature/engine/m1`.** The fix is three files plus a
+self-check: `src/core/rng.ts`, `src/core/world.ts`, `src/engine/chunkStore.ts`,
+`scripts/selfcheck/rngCompatCheck.ts` (new), `scripts/selfcheck/engineCheck.ts`
+(new section 10), and one line in `package.json` wiring the new self-check
+into `gate:selfcheck`.
+
+### THE CONTRACT QUESTION, ANSWERED
+
+The board note said this was a contract question, not a one-line bug: "if the
+contract says the seed is 32-bit, then `>>> 0` is correct and this finding
+closes as 'not a defect'; if the contract means 'any number', rng.ts must fold
+the high half like the noise layer now does."
+
+**The contract means 'any number'.** `src/core/types.ts` declares
+`readonly seed: number` — a plain `number`, with no 32-bit bound anywhere in
+it, and `docs/API.md` says the same. The codebase had already decided this
+question in two places before the finding was filed: `noise.ts` folds both
+32-bit halves of the seed (`seedWord`), and `world.ts`'s `deriveSeed` does the
+same. T47 (c97eb34) fixed the noise layer and explicitly flagged `rng.ts` as
+the handed-over remainder. This is that remainder, closed.
+
+### WHAT WAS ACTUALLY WRONG
+
+`SeededRngImpl`'s constructor did `this.seed = seed >>> 0`. Everything above
+bit 31 was discarded, so:
+
+- `createRng(4294967296)` and `createRng(0)` produced the IDENTICAL stream
+  `1684164658,3653269916,2939563536,2141751570`;
+- `fork()` derived the child from the truncated seed, so two parents 2^32
+  apart handed every subsystem the same child stream;
+- `World.hash()` and `ChunkStore.hash()` mixed that same truncated seed as
+  four bytes, so `new World(4294967296).hash() === new World(0).hash() ===
+  '4b95f515'` — falsifying `World.hash()`'s own docstring promise that "two
+  worlds with different seeds can never hash the same however few chunks they
+  have loaded".
+
+### THE FIX
+
+**`src/core/rng.ts`** — the seed is split into a low 32-bit word and a high
+32-bit word, the same decomposition `noise.ts` and `deriveSeed` already use.
+The low word drives the counter exactly as before; the high word is folded
+into one 32-bit word and XORed into every draw. The multiplier (0x27d4eb2d,
+odd) and the finalizer (`mix32`) are both bijections, so two DIFFERENT high
+halves always fold to different words — the aliasing is gone, not merely made
+unlikely. `fork()` and `getState()`/`setState()` carry the high half too, and
+`getState().seed` now reports the seed as given rather than the truncated
+one, so a checkpoint of a large seed restores exactly.
+
+**`src/core/world.ts` and `src/engine/chunkStore.ts`** — the seed is mixed
+into the hash as EIGHT little-endian bytes: the low half, then the high
+half. A seed and that seed 2^32 apart can no longer produce the same hash.
+
+### NO EXISTING WORLD MOVES (proved by execution)
+
+For every seed in [0, 2^32) the high half is zero, so the stream is
+byte-identical to the old one. That is not an assertion — it is checked.
+`scripts/selfcheck/rngCompatCheck.ts` re-implements the OLD algorithm verbatim
+(`oldMix32`, `oldHashLabel`, and the old truncation) and compares it
+draw-for-draw against the real `createRng`: the parent stream over 64 draws
+and five forked child streams over 32 draws each, for fifteen seeds
+(0, 1, 2, 42, 1234, 12345, 65535, 65536, 1337, 2147483647, 4294967295,
+0xabcdef, 987654321, 2000000000, 4294967294). Zero draws differ, in the
+parent and in every child. It is wired into `gate:selfcheck`, so it cannot
+rot unnoticed.
+
+### VERIFIED (every command run, every result read back)
+
+- `npm run typecheck` -> exit 0
+- `npm run lint` -> exit 0 (0 errors, 14 pre-existing no-console warnings in
+  scripts/, all pre-existing)
+- `npm run gate:selfcheck` -> exit 0 (engineCheck 10 new checks all `ok`,
+  rngCompatCheck 3/3 `ok`)
+- `npm run gate:determinism` -> exit 0. **G6 PASS**, 5 seeds, identical
+  hashes across fresh processes. The hash VALUES moved, because the seed is
+  now mixed in as eight bytes instead of four:
+  seed 0 `98f02e84`, seed 1 `1429c2a1`, seed 12345 `2054e01d`,
+  seed 2147483647 `2b4c9c6b`, seed -1 `9227d8ac`. The ARCHITECT owns
+  docs/PROGRESS.md and docs/VICTORIES.md, which still quote the old values
+  (`d6e4cc59`, `bd3879a7`, `57b308bb`, `66e09129`, `4df02b13`) — **those two
+  tables need updating centrally.**
+- `npm run gate:bench` -> exit 0. **G3 PASS**, avg 11.706 ms/chunk, p95
+  17.623 ms, budget 16 ms.
+- `npm run build` -> exit 0.
+- `npm run test` -> 349 passed, 1 expected fail, **2 failed** — the two
+  failures are exactly the two armed `it.fails` stubs in
+  `tests/redteam/engine-attack.test.ts` ("E5: the RNG must not alias two
+  seeds that differ by 2^32" and "E5: two worlds with different seeds must
+  never hash the same"). They were armed to flip RED the moment the fix
+  lands, and they did. That is the designed closure signal, not a regression:
+  the fix makes their assertions PASS, and `it.fails` reports a passing body
+  as a failure. **RED-TEAM owns converting those two stubs to plain `it()`
+  regression guards** — I do not own `tests/`.
+  The control ("the seed probe is live — nearby seeds do NOT alias") still
+  passes, so the flip is the fix landing, not a dead probe.
+
+### FOR THE RED-TEAM
+
+The two armed stubs now flip RED. Convert them to plain `it()` and they will
+guard the fixed behaviour permanently. Note the one thing that DID change for
+every existing seed: the world HASH VALUE. The hash is now seeded with eight
+bytes of seed instead of four, so every recorded hash moved (values above).
+The stream behind it did not: `rngCompatCheck` proves it draw-for-draw.
+
+### WHAT IT DEPENDS ON / WHAT IT BLOCKS
+
+Nothing. It is self-contained in the engine's own files plus one line of
+`package.json`. It blocks nothing downstream.
+
+### RISK THE USER MUST KNOW
+
+Two world hashes recorded centrally are now stale (see above). Any save file
+or replay that pins an old hash value would need regenerating — there are
+none in the tree; the only consumers are the G6 script and the renderer's
+canonical-chunk hash, and neither stores a hash on disk.
+
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+- [2026-10-22T04:28:00+0000] bugfix — the seed is no longer truncated to 32
+  bits, so two world seeds 2^32 apart no longer share one RNG stream and no
+  longer hash the same — evidence: `createRng(4294967296)` and `createRng(0)`
+  produced the identical stream `1684164658,3653269916,2939563536,2141751570`
+  and `new World(4294967296).hash() === new World(0).hash() === '4b95f515'`;
+  now `createRng(2^32)` and `createRng(0)` differ, `World(2^32).hash() !==
+  World(0).hash()`, and the two armed `it.fails` stubs in
+  `tests/redteam/engine-attack.test.ts` (E5) FLIP RED, which is the designed
+  closure signal — no existing world moved: `scripts/selfcheck/rngCompatCheck.ts`
+  compares the new stream against the OLD algorithm draw-for-draw (parent +
+  five forked children, fifteen seeds, zero draws differ) — commit `6860e91`
+  on `feature/engine/m1` — M1
