@@ -17,6 +17,7 @@ import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
 import { buildSky } from "./sky.js";
 import { CloudLayer } from "./clouds.js";
+import { DropRenderer, DROP_SIZE, type DroppedItemView, type DropView } from "./drops.js";
 import { WORLD_SEED } from "./engineBridge.js";
 import { Viewmodel } from "./viewmodel.js";
 import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
@@ -159,6 +160,15 @@ export class WorldRenderer {
   private cloudTick = 0;
 
   /**
+   * The items lying on the ground.
+   *
+   * They live in the WORLD scene, not the overlay: a drop is a thing in
+   * the world, so it is lit by the sun and fades into the fog with
+   * everything else.
+   */
+  private readonly drops = new DropRenderer();
+
+  /**
    * A second scene that holds ONLY the viewmodel.
    *
    * The hand is parented to the camera, and the camera lives in this scene
@@ -169,6 +179,10 @@ export class WorldRenderer {
   private readonly overlayScene = new THREE.Scene();
   private readonly meshes = new Map<string, ChunkMesh>();
   private readonly highlight: THREE.LineSegments;
+
+  /** The canvas size in CSS pixels, so a drop can be located on screen. */
+  private canvasWidth = 1;
+  private canvasHeight = 1;
 
   constructor(canvas: HTMLCanvasElement) {
     this.scene = new THREE.Scene();
@@ -199,6 +213,8 @@ export class WorldRenderer {
     this.renderer.setSize(canvas.clientWidth, Math.max(1, canvas.clientHeight), false);
     this.renderer.setPixelRatio(1);
     this.viewmodel.setViewport(canvas.clientWidth, Math.max(1, canvas.clientHeight));
+    this.canvasWidth = canvas.clientWidth;
+    this.canvasHeight = Math.max(1, canvas.clientHeight);
 
     // Lighting: sky light, a warm key light, and a floor of ambient.
     //
@@ -238,6 +254,7 @@ export class WorldRenderer {
     this.scene.add(this.clouds.group);
 
     this.scene.add(this.chunkGroup);
+    this.scene.add(this.drops.group);
 
     const box = new THREE.BoxGeometry(1.002, 1.002, 1.002);
     this.highlight = new THREE.LineSegments(
@@ -281,6 +298,63 @@ export class WorldRenderer {
     }
   }
 
+  /**
+   * Show the items lying on the ground.
+   *
+   * The caller passes the gameplay layer's view of the world; the meshes
+   * are rebuilt only when the SET of item ids changes, so a frame that
+   * changes nothing costs a handful of position writes and no geometry.
+   */
+  setDroppedItems(items: readonly DroppedItemView[]): void {
+    this.drops.setItems(items);
+  }
+
+  /**
+   * The drops that are currently drawn, for the browser tests to read.
+   *
+   * A drop that exists in the gameplay layer but is never drawn is the
+   * bug this whole module exists to prevent, so the tests need a way to
+   * see the renderer's own count - not the session's.
+   */
+  get droppedItems(): readonly DropView[] {
+    return this.drops.views();
+  }
+
+  /**
+   * Where a drop is on the screen, in CSS pixels relative to the canvas.
+   *
+   * A drop's mesh EXISTING is not the same as a drop being VISIBLE: it
+   * could be behind the camera, off the edge of the frame, or buried in
+   * the ground. This projects the drop's centre through the camera so a
+   * browser test can sample the ACTUAL PIXELS where it should be, which
+   * is the only check that cannot pass on a mesh nobody can see.
+   */
+  dropScreenBounds(drop: DropView): { x: number; y: number; width: number; height: number } | null {
+    const point = new THREE.Vector3(drop.x, drop.y, drop.z).project(this.camera);
+    // z > 1 means the point is BEHIND the camera, and the projection
+    // wraps around, so it must be rejected rather than clamped.
+    if (point.z > 1 || point.z < -1) {
+      return null;
+    }
+    const width = this.canvasWidth;
+    const height = this.canvasHeight;
+    const x = ((point.x + 1) / 2) * width;
+    const y = ((1 - point.y) / 2) * height;
+    // How many pixels the drop covers depends on how far away it is, so
+    // the box is sized from the projection of a point half a drop to the
+    // side rather than from a guessed constant.
+    const edge = new THREE.Vector3(drop.x + DROP_SIZE / 2, drop.y, drop.z).project(this.camera);
+    const halfWidth = Math.abs(((edge.x + 1) / 2) * width - x);
+    const edgeUp = new THREE.Vector3(drop.x, drop.y + DROP_SIZE / 2, drop.z).project(this.camera);
+    const halfHeight = Math.abs(((1 - edgeUp.y) / 2) * height - y);
+    return {
+      x: Math.floor(x - halfWidth),
+      y: Math.floor(y - halfHeight),
+      width: Math.max(1, Math.ceil(halfWidth * 2)),
+      height: Math.max(1, Math.ceil(halfHeight * 2)),
+    };
+  }
+
   /** Apply the player's position and orientation to the camera. */
   applyPlayer(state: PlayerState): void {
     this.camera.position.set(
@@ -296,6 +370,11 @@ export class WorldRenderer {
     // that is not advanced has every cloud sitting at the origin.
     this.cloudTick++;
     this.clouds.advance(this.cloudTick, state.position);
+
+    // Spin the ground items. The same counter drives them, so the spin
+    // is a function of how far the game has advanced and never of the
+    // wall clock.
+    this.drops.update(this.cloudTick);
   }
 
   /** Show the wireframe on the block the player is aiming at. */
@@ -411,6 +490,8 @@ export class WorldRenderer {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, Math.max(1, height), false);
     this.viewmodel.setViewport(width, Math.max(1, height));
+    this.canvasWidth = width;
+    this.canvasHeight = Math.max(1, height);
   }
 
   dispose(): void {

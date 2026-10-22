@@ -16,6 +16,7 @@ export type SoundName =
   | "place"
   | "deny"
   | "click"
+  | "pickup"
   | "splash";
 
 interface ToneSpec {
@@ -41,6 +42,11 @@ const TONES: Readonly<Record<SoundName, ToneSpec | null>> = {
   place: { type: "sine", from: 320, to: 188, duration: 0.1, gain: 0.07 },
   deny: { type: "sawtooth", from: 118, to: 96, duration: 0.14, gain: 0.05 },
   click: { type: "sine", from: 880, to: 660, duration: 0.045, gain: 0.045 },
+  // The pickup: a soft rising two-note chime. It is deliberately QUIET and
+  // short - it happens when the player walks over something, which can be
+  // several times a second, and a loud sound for every pickup would be
+  // unbearable.
+  pickup: { type: "sine", from: 620, to: 930, duration: 0.13, gain: 0.04 },
   splash: null,
 };
 
@@ -50,6 +56,9 @@ const NOISE: Readonly<Record<SoundName, NoiseSpec | null>> = {
   place: { duration: 0.07, gain: 0.035, filterFrom: 900, filterTo: 260, q: 0.9 },
   deny: null,
   click: null,
+  // A whisper of noise under the chime: a soft "thump" that says
+  // something was lifted off the ground.
+  pickup: { duration: 0.06, gain: 0.02, filterFrom: 1200, filterTo: 400, q: 0.8 },
   splash: { duration: 0.28, gain: 0.05, filterFrom: 2600, filterTo: 420, q: 0.7 },
 };
 

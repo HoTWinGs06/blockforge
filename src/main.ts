@@ -226,10 +226,26 @@ export class Game {
     // T83: the same call advances the survival rules - hunger drains on
     // the tick counter, faster while the player is moving, and a fall
     // hurts when the player lands.
+    //
+    // T96: the pack is read on BOTH sides of this call, because it is the
+    // only place the pickup is visible: an item that is collected is
+    // removed from the ground AND added to the pack, and the pack grows
+    // ONLY there (placing a block takes one out, but that happens
+    // elsewhere). So a pack that grew during this call means the player
+    // just picked something up.
+    const carriedBefore = this.carriedCount();
     this.session.update(dt, this.position, this.activity(), this.onGround);
+    if (this.carriedCount() > carriedBefore) {
+      this.sound.play("pickup");
+    }
     this.checkDeath();
 
     this.updateBreaking(dt);
+    // T96: draw the items lying on the ground. Without this the player
+    // walked over an INVISIBLE item - the mechanic worked and nothing was
+    // ever on screen. The renderer diffs the list by id, so this is cheap
+    // on a frame where nothing changed.
+    this.renderer.setDroppedItems(this.session.droppedItems());
     this.renderer.applyPlayer(this.playerState);
     this.renderer.updateViewmodel(dt, this.horizontalSpeed(), this.onGround);
     this.updateView();
@@ -615,7 +631,22 @@ export class Game {
   }
 
   /**
-   * The tool in the selected hotbar slot, or null.
+   * How many items the player is carrying, over every slot.
+   *
+   * This is the count that GROWS when the player picks something up, and
+   * it is how the loop knows a pickup happened without the gameplay layer
+   * having to report it: the pack only grows inside session.update().
+   */
+  private carriedCount(): number {
+    let total = 0;
+    for (const slot of this.session.carried.slots) {
+      total += slot.count;
+    }
+    return total;
+  }
+
+  /**
+   * The tool in the selected hotbar slot, or null for bare hands.
    *
    * This returned null unconditionally, which meant the player could never
    * satisfy the contract's tool rule. breakSecondsWith() returns -1 for a
@@ -799,6 +830,35 @@ export class Game {
       carried: () =>
         this.session.carried.slots.map((slot) => ({ id: slot.id, count: slot.count })),
       dropped: () => this.session.droppedItems().length,
+      // T96: the drops the RENDERER has actually drawn. The session's
+      // count above is the logic; this is the visual. They must agree -
+      // an item the session knows about that the renderer never drew is
+      // the invisible-item bug this task exists to close.
+      drawnDrops: () =>
+        this.renderer.droppedItems.map((drop) => ({
+          id: drop.id,
+          x: drop.x,
+          y: drop.y,
+          z: drop.z,
+          size: drop.size,
+          minU: drop.minU,
+          maxU: drop.maxU,
+          minV: drop.minV,
+          maxV: drop.maxV,
+          // Where the drop should be ON THE SCREEN. A browser test
+          // samples these pixels, which is the only check that cannot
+          // pass on a mesh nobody can see.
+          screen: this.renderer.dropScreenBounds(drop),
+        })),
+      // The session's own view of the items on the ground, so a test can
+      // compare WHERE the renderer drew them with where they are.
+      droppedItems: () =>
+        this.session.droppedItems().map((item) => ({
+          id: item.id,
+          x: item.x,
+          y: item.y,
+          z: item.z,
+        })),
       setBreaking: (holding: boolean): void => {
         this.breaking = holding;
         if (holding) {
@@ -872,6 +932,34 @@ export interface GameHandle {
   carried(): readonly { id: string; count: number }[];
   /** How many items are lying on the ground right now. */
   dropped(): number;
+  /**
+   * The items the RENDERER has actually drawn on the ground.
+   *
+   * `dropped()` is the gameplay layer's count; this is the renderer's.
+   * They must agree - an item the session knows about that the renderer
+   * never drew is the invisible-item bug, and a browser test that only
+   * reads the logic cannot see it.
+   */
+  drawnDrops(): readonly {
+    id: number;
+    x: number;
+    y: number;
+    z: number;
+    size: number;
+    minU: number;
+    maxU: number;
+    minV: number;
+    maxV: number;
+    /** Where the drop should be on the screen, in CSS pixels. */
+    screen: { x: number; y: number; width: number; height: number } | null;
+  }[];
+  /**
+   * The session's own view of the items on the ground.
+   *
+   * `dropped()` counts them; this says where they are, so a test can
+   * check that the renderer drew them in the right place.
+   */
+  droppedItems(): readonly { id: number; x: number; y: number; z: number }[];
   /** Start or stop holding the break button. */
   setBreaking(holding: boolean): void;
   /** How far through the current break the player is, 0..1, or null. */
