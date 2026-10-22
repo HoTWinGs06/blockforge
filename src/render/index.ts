@@ -7,6 +7,8 @@
 
 export { WorldRenderer, buildChunkMesh, chunkKeyOf, withinWorld, REACH_DISTANCE } from "./renderer.js";
 export type { ChunkMesh } from "./renderer.js";
+export { DropRenderer, DROP_SIZE } from "./drops.js";
+export type { DroppedItemView, DropView } from "./drops.js";
 export { Hud, blockLabel } from "./hud.js";
 export type { HudState, HudHotbarSlot } from "./hud.js";
 export { SoundBoard } from "./audio.js";

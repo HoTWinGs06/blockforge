@@ -64,10 +64,25 @@ export class Viewmodel {
 
   /** The light that lights the hand, so it does not depend on the sun. */
   private readonly keyLight: THREE.DirectionalLight;
-  private readonly fillLight: THREE.HemisphereLight;
+
+  /**
+   * What the key light points at.
+   *
+   * It has to be a real object inside the viewmodel's own frame: a
+   * DirectionalLight aims from its position at its target, and the default
+   * target sits at the world origin - which would aim the hand's light at
+   * the ground eighty blocks below the player.
+   */
+  private readonly keyTarget: THREE.Object3D;
+
+  private readonly fillLight: THREE.AmbientLight;
 
   /** The block kind the hand is holding. */
   private heldBlock: BlockId = BlockId.Rubble;
+
+  /** The canvas size in CSS pixels, so the hand can report where it is. */
+  private viewportWidth = 1;
+  private viewportHeight = 1;
 
   /** 0..1, how far through a swing the hand is. */
   private swing = 0;
@@ -126,11 +141,121 @@ export class Viewmodel {
     this.keyLight.position.set(0.6, 1, 0.8);
     this.group.add(this.keyLight);
 
-    this.fillLight = new THREE.HemisphereLight("#cfe3ff", "#8a7d68", 1.6);
+    // THE KEY LIGHT'S TARGET MUST LIVE IN THE VIEWMODEL'S OWN FRAME.
+    //
+    // A DirectionalLight points from its position at its target, and
+    // three.js's default target is an Object3D that is never added to the
+    // scene graph - so its world position stays at the WORLD ORIGIN.
+    //
+    // The light is a child of the camera, so its world position rides
+    // along with the camera while the target stays at (0,0,0) - eighty-odd
+    // blocks below the player. The light therefore shone almost straight
+    // DOWN in world space, and the hand was re-lit every time the player
+    // looked around. Measured on the broken tree: the face turned toward
+    // the camera had N.L = 0.02 and rendered black ([30,30,30]), the same
+    // face rendered [90,94,98] a moment later at another camera pitch,
+    // and only 0.8% of the hand's pixels were unchanged between the two
+    // poses. A first-person hand has to look the same wherever the player
+    // is looking.
+    //
+    // Parenting the target to the viewmodel group fixes the direction in
+    // the hand's own frame, so the lighting is constant from here on.
+    this.keyTarget = new THREE.Object3D();
+    this.keyTarget.position.set(0, 0, 0);
+    this.group.add(this.keyTarget);
+    this.keyLight.target = this.keyTarget;
+
+    // THE FILL MUST NOT DEPEND ON WHERE THE HAND IS IN THE WORLD.
+    //
+    // A HemisphereLight gets its sky/ground axis from its own WORLD
+    // POSITION, so a fill parented to the camera swings as the camera
+    // turns: the same face of the hand came out [93,96,100] at one camera
+    // pitch and [96,101,107] at another. A viewmodel has to look the same
+    // wherever the player is looking.
+    //
+    // An AmbientLight has no direction at all, so it cannot leak the
+    // camera's pose into the hand's shading. The modelling comes from the
+    // key light, whose N.L across the three visible faces is 0.57, 0.42
+    // and 0.71 - the cube still reads as a solid block.
+    this.fillLight = new THREE.AmbientLight("#b9c7d6", 1.5);
     this.group.add(this.fillLight);
 
     this.group.position.copy(this.basePosition);
     this.group.rotation.set(0.25, -0.55, 0.1);
+  }
+
+  /**
+   * The hand's screen-space bounding box, in CSS pixels.
+   *
+   * The hand is a child of the CAMERA, so its place on the screen depends
+   * only on the projection and the viewmodel's fixed camera-space
+   * transform - NOT on where the player is looking. A test can therefore
+   * ask where the hand actually is and sample ITS pixels, instead of
+   * guessing at a region that is mostly background.
+   *
+   * Returned in CSS pixels relative to the canvas, which is what
+   * page.screenshot() and Playwright's boundingBox() both use.
+   */
+  get screenBounds(): { x: number; y: number; width: number; height: number } | null {
+    const parent = this.group.parent;
+    if (!parent || !(parent instanceof THREE.Camera)) {
+      return null;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const corner of this.handCorners()) {
+      // The group is a child of the camera, so the group's LOCAL matrix
+      // takes a corner straight into camera space - and camera space IS
+      // view space, which is what the projection matrix expects. Going
+      // through the world matrix instead would read a matrixWorld that
+      // the renderer may not have refreshed yet.
+      const p = corner.applyMatrix4(this.group.matrix).applyMatrix4(parent.projectionMatrix);
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    // NDC (-1..1) to pixels.
+    const toX = (v: number): number => ((v + 1) / 2) * this.viewportWidth;
+    const toY = (v: number): number => ((1 - v) / 2) * this.viewportHeight;
+    const x = toX(minX);
+    const y = toY(maxY);
+    return {
+      x: Math.floor(x),
+      y: Math.floor(y),
+      width: Math.ceil(toX(maxX) - x),
+      height: Math.ceil(toY(minY) - y),
+    };
+  }
+
+  /**
+   * The hand's eight corners, in the viewmodel group's own frame.
+   *
+   * The cube's size is fixed, so this is the same shape every frame.
+   */
+  private handCorners(): THREE.Vector3[] {
+    const h = this.size / 2;
+    const corners: THREE.Vector3[] = [];
+    for (const x of [-h, h]) {
+      for (const y of [-h, h]) {
+        for (const z of [-h, h]) {
+          corners.push(new THREE.Vector3(x, y, z));
+        }
+      }
+    }
+    return corners;
+  }
+
+  /**
+   * The size of the canvas the hand is drawn on, in CSS pixels.
+   *
+   * Set by the renderer, which owns the canvas.
+   */
+  setViewport(width: number, height: number): void {
+    this.viewportWidth = width;
+    this.viewportHeight = height;
   }
 
   /**

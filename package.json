@@ -18,7 +18,7 @@
     "dev": "vite",
     "gate:bench": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/bench/chunkBench.js",
     "gate:determinism": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/determinism/check.js",
-    "gate:selfcheck": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/engineCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/meshCheck.js",
+    "gate:selfcheck": "tsc -p scripts/tsconfig.build.json && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/engineCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/meshCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/craftingCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/dropsCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/toolsCheck.js && node node_modules/.cache/blockforge-scripts/scripts/selfcheck/survivalCheck.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

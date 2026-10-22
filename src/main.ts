@@ -14,7 +14,6 @@ import {
   ALL_BLOCK_IDS,
   BlockId,
   type ChunkKey,
-  type ItemStack,
   type PlayerState,
   type ToolSpec,
   type Vec3,
@@ -23,11 +22,16 @@ import { CHUNK_SIZE_Y, breakSecondsWith, requiredToolFor, toolSpec } from "./cor
 import {
   aabbIntersects,
   bodyAabb,
+  createJumpState,
   moveWithCollisions,
+  stepJumpAssist,
   stepPhysics,
+  type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
 import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
+import { GameplaySession } from "./gameplay/index.js";
+import type { Activity } from "./gameplay/index.js";
 import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
 
 /**
@@ -55,8 +59,6 @@ export interface EngineBridge {
   updateView?(playerX: number, playerZ: number, renderer: WorldRenderer): void;
 }
 
-/** How many hotbar slots the HUD shows. */
-const HOTBAR_SLOTS = 9;
 const EYE_HEIGHT = 1.62;
 /**
  * Walking speed, in blocks per second.
@@ -75,6 +77,15 @@ const SPRINT_MULTIPLIER = 1.8;
 const JUMP_SPEED = 8.0;
 const REACH = 6.0;
 
+/**
+ * Where the player starts, and where they wake up after dying.
+ *
+ * High in the air, so the world is visible on the first frame, and the
+ * player falls onto the terrain. The drop into the world is not a fall
+ * the player took, so it does not hurt them.
+ */
+const SPAWN_POSITION: Vec3 = { x: 0.5, y: 90, z: 0.5 };
+
 /** The running game. */
 export class Game {
   private readonly renderer: WorldRenderer;
@@ -89,11 +100,20 @@ export class Game {
   private pitch = 0;
   private onGround = false;
 
+  /**
+   * The ENGINE's jump assist state: coyote time and jump buffering.
+   *
+   * The assist is the engine's (src/core/physics.ts) and it decides WHEN a
+   * jump fires. This file only feeds it the input and applies the velocity
+   * it asks for.
+   */
+  private jumpState: JumpState = createJumpState();
+
   private readonly keys = new Set<string>();
   private selectedSlot = 0;
 
   /**
-   * What the player is carrying.
+   * What the player is carrying, and what is lying on the ground.
    *
    * The player starts with a TIMBER MATTOCK and some blocks. That is not a
    * convenience: the contract froze a tool rule, so a player with an empty
@@ -102,9 +122,6 @@ export class Game {
    * tools or build them". A basic tool in the starting kit is what makes
    * the world playable at all; the crafting chain that makes BETTER tools
    * is the gameplay role's work and is tracked on the board.
-   *
-   * The shape is the contract's ItemStack, and the ids are the contract's
-   * own.
    *
    * ALL FOUR timber-tier tools, because the contract's tool rule is by KIND
    * and not by tier: canBreak() returns true only when the tool's kind is
@@ -115,23 +132,17 @@ export class Game {
    * ground under their own feet, which is exactly what the operator
    * reported: "no tools yet". The timber tier is the entry tier; better
    * tools are the crafting chain (T81, T82, T84).
+   *
+   * T80: the inventory is a real thing now. Breaking a block LEAVES AN ITEM
+   * on the ground, the player walks over it to collect it, and the hotbar
+   * counts what they carry - the operator reported "not able to collect
+   * broken blocks no inventory", and both halves are in this session.
    */
-  private readonly inventory: ItemStack[] = [
-    { id: "mattock_timber", count: 1, durability: 60 },
-    { id: "trowel_timber", count: 1, durability: 60 },
-    { id: "billhook_timber", count: 1, durability: 60 },
-    { id: "maul_timber", count: 1, durability: 60 },
-    { id: "loam", count: 16 },
-    { id: "timber", count: 16 },
-    { id: "rubble", count: 16 },
-    { id: "sand", count: 16 },
-  ];
+  private readonly session = new GameplaySession();
   /** True while the player is holding the break button. */
   private breaking = false;
   /** The in-progress break, or null. */
   private breakState: { key: string; elapsed: number; total: number } | null = null;
-  private health = 20;
-  private hunger = 20;
   private message: string | null = null;
   private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
@@ -164,8 +175,11 @@ export class Game {
       yaw: this.yaw,
       pitch: this.pitch,
       onGround: this.onGround,
-      health: 20,
-      hunger: 20,
+      // T83: the real numbers, not two decorative twenties. The session
+      // owns the survival state; the HUD and the renderer read it from
+      // here.
+      health: this.session.health,
+      hunger: this.session.hunger,
     };
   }
 
@@ -205,7 +219,33 @@ export class Game {
     }
     this.applyGravity(dt);
 
+    // T80: collect whatever the player walked over. The session owns the
+    // inventory, the items on the ground and the player's survival state;
+    // the loop just tells it the player moved and how long has passed.
+    //
+    // T83: the same call advances the survival rules - hunger drains on
+    // the tick counter, faster while the player is moving, and a fall
+    // hurts when the player lands.
+    //
+    // T96: the pack is read on BOTH sides of this call, because it is the
+    // only place the pickup is visible: an item that is collected is
+    // removed from the ground AND added to the pack, and the pack grows
+    // ONLY there (placing a block takes one out, but that happens
+    // elsewhere). So a pack that grew during this call means the player
+    // just picked something up.
+    const carriedBefore = this.carriedCount();
+    this.session.update(dt, this.position, this.activity(), this.onGround);
+    if (this.carriedCount() > carriedBefore) {
+      this.sound.play("pickup");
+    }
+    this.checkDeath();
+
     this.updateBreaking(dt);
+    // T96: draw the items lying on the ground. Without this the player
+    // walked over an INVISIBLE item - the mechanic worked and nothing was
+    // ever on screen. The renderer diffs the list by id, so this is cheap
+    // on a frame where nothing changed.
+    this.renderer.setDroppedItems(this.session.droppedItems());
     this.renderer.applyPlayer(this.playerState);
     this.renderer.updateViewmodel(dt, this.horizontalSpeed(), this.onGround);
     this.updateView();
@@ -274,9 +314,23 @@ export class Game {
    * implementation, which meant the module that was designed, documented and
    * tested for this was not the code that actually moved the player - the two
    * drifted, and src/core/physics.ts sat at 5.68% coverage while the game ran.
+   *
+   * The JUMP is the ENGINE's too: stepJumpAssist() decides WHEN a jump
+   * fires, and this file applies the velocity it asks for. The old code
+   * jumped only on `keys.has("Space") && onGround`, which DROPPED a press
+   * that arrived a fraction of a second too late (the body had already
+   * left the ground) or too early (the body had not landed yet) - that was
+   * the operator's "the jump does not work in all areas".
    */
   private applyGravity(dt: number): void {
-    if (this.keys.has("Space") && this.onGround) {
+    // The assist is stepped ONCE per tick and reads the ground state at the
+    // END of the previous tick, which is what this.onGround holds here.
+    const assist = stepJumpAssist(this.jumpState, {
+      jumpHeld: this.keys.has("Space"),
+      onGround: this.onGround,
+    });
+    this.jumpState = assist.state;
+    if (assist.jumped) {
       this.velocity = { ...this.velocity, y: JUMP_SPEED };
       this.onGround = false;
     }
@@ -382,6 +436,11 @@ export class Game {
       return;
     }
     this.engine.setBlock(cell.x, cell.y, cell.z, block);
+    // T80: placing a block TAKES IT OUT OF THE PACK. Before this, the
+    // hotbar was a decoration: the player could place blocks forever and
+    // the count never moved. Now the count is the truth, and a player who
+    // has run out of a block cannot place any more of it.
+    this.session.consumeHeld();
     this.sound.play("place");
     this.engine.syncChunk(chunkKeyOf(cell.x, cell.y, cell.z), this.renderer);
   }
@@ -413,13 +472,79 @@ export class Game {
     }
     state.elapsed += dt;
     if (state.elapsed >= state.total) {
+      const broken = this.engine.blockAt(hit.x, hit.y, hit.z);
       this.engine.setBlock(hit.x, hit.y, hit.z, BlockId.Air);
+      // T80: the block does not simply vanish - it LEAVES AN ITEM on the
+      // ground, and the player collects it by walking over it. The drop
+      // table decides what it leaves, and the wrong-tool rule is applied
+      // there: a block broken with the wrong tool drops NOTHING, which is
+      // what makes tools worth crafting.
+      this.session.breakBlock(broken, this.heldTool(), hit.x, hit.y, hit.z, this.solidWorld());
       this.sound.play("break");
       this.engine.syncChunk(chunkKeyOf(hit.x, hit.y, hit.z), this.renderer);
       // The hand swings when the block breaks.
       this.renderer.swingViewmodel();
       this.breakState = null;
     }
+  }
+
+  /**
+   * How hard the player is working, which is how fast hunger drains.
+   *
+   * Sprinting burns the most, walking some, standing still least. The
+   * survival rules are what turn this into a drain rate.
+   */
+  private activity(): Activity {
+    if (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")) {
+      return "sprinting";
+    }
+    return this.horizontalSpeed() > 0.1 ? "moving" : "idle";
+  }
+
+  /**
+   * The player died: put them back on their feet.
+   *
+   * The world is NOT reset. The blocks the player broke stay broken, the
+   * items they dropped stay where they fell, and the player comes back
+   * at the top of the world with a full belly. Only the player is put
+   * back together.
+   */
+  private checkDeath(): void {
+    if (!this.session.dead) {
+      return;
+    }
+    this.session.respawn();
+    this.position = { ...SPAWN_POSITION };
+    this.velocity = { x: 0, y: 0, z: 0 };
+    this.onGround = false;
+    this.message = "You died. You wake at the top of the world, hungry and whole.";
+  }
+
+  /**
+   * Eat the food in hand.
+   *
+   * The key is the shell's business; the rule is the session's: the item
+   * in hand has to be food, and the player has to be hungry.
+   */
+  private eat(): void {
+    // The name is read BEFORE the meal: eating takes the item out of the
+    // pack, so the hand may be empty by the time the message is written.
+    const name = this.session.held()?.id ?? "";
+    const outcome = this.session.eat();
+    if (outcome.ate) {
+      this.message = `You eat the ${blockLabel(name as BlockId)} (+${outcome.restored} hunger)`;
+      this.sound.play("place");
+      return;
+    }
+    this.message =
+      outcome.reason === "not-hungry"
+        ? "You are not hungry"
+        : outcome.reason === "not-food"
+          ? "That is not food"
+          : outcome.reason === "dead"
+            ? "You are dead"
+            : "You have nothing in your hand";
+    this.sound.play("deny");
   }
 
   /** Ray-march from the eye along the look direction and return the first solid block. */
@@ -463,26 +588,30 @@ export class Game {
     } else {
       this.renderer.hideHighlight();
     }
-    // The hand holds the selected hotbar item. The ITEMS are M3 content and
-    // the hotbar is still empty, so the hand holds rubble - but the wiring
-    // is real, and when the inventory lands the hand will pick up whatever
-    // the player has selected.
-    this.renderer.setHeldBlock(BlockId.Rubble);
+    // The hand holds the selected hotbar item. When the player selects a
+    // block, the hand shows that block's texture; when they select a tool
+    // there is no block texture for it yet, so the hand keeps the last
+    // block it had.
+    const heldBlock = this.heldBlockId();
+    if (heldBlock !== null) {
+      this.renderer.setHeldBlock(heldBlock);
+    }
 
     this.hud.update({
       targetedBlock: hit ? this.engine.blockAt(hit.x, hit.y, hit.z) : null,
       targetedPosition: hit,
-      // Nine slots, always. The ITEMS are M3 (GAMEPLAY) content and are empty
-      // for now, but the hotbar SHELL is M1: the operator reported "no
-      // inventory bar", and a bar made of nothing is not a bar. Empty slots
-      // still read as slots.
-      hotbar: Array.from({ length: HOTBAR_SLOTS }, (_, i) => {
-        const item = this.inventory[i];
-        return item ? { id: item.id, count: item.count } : { id: "", count: 0 };
-      }),
+      // Nine slots, always. The hotbar SHELL is M1: the operator reported
+      // "no inventory bar", and a bar made of nothing is not a bar. The
+      // ITEMS are real now (T80): the slots carry what the player actually
+      // holds, with the count of each.
+      hotbar: this.session.carried.slots.map((item) => ({
+        id: item.id,
+        count: item.count,
+        ...(item.durability === undefined ? {} : { durability: item.durability }),
+      })),
       selectedSlot: this.selectedSlot,
-      health: this.health,
-      hunger: this.hunger,
+      health: this.session.health,
+      hunger: this.session.hunger,
       message: this.message,
       breakProgress: this.breakProgress(),
       breakingBlock: this.breakBlock(),
@@ -502,16 +631,22 @@ export class Game {
   }
 
   /**
-   * The tool the player is holding, or null for bare hands.
+   * How many items the player is carrying, over every slot.
    *
-   * The INVENTORY is M3 content and does not exist yet, so this is always
-   * null - which means only the blocks the contract lets bare hands break
-   * are breakable. That is the honest state: the tool rule is real, and the
-   * tools to satisfy it have not been crafted yet. When the inventory lands,
-   * this reads the selected hotbar slot.
+   * This is the count that GROWS when the player picks something up, and
+   * it is how the loop knows a pickup happened without the gameplay layer
+   * having to report it: the pack only grows inside session.update().
    */
+  private carriedCount(): number {
+    let total = 0;
+    for (const slot of this.session.carried.slots) {
+      total += slot.count;
+    }
+    return total;
+  }
+
   /**
-   * The tool in the selected hotbar slot, or null.
+   * The tool in the selected hotbar slot, or null for bare hands.
    *
    * This returned null unconditionally, which meant the player could never
    * satisfy the contract's tool rule. breakSecondsWith() returns -1 for a
@@ -520,8 +655,8 @@ export class Game {
    * is no way to get tools".
    */
   private heldTool(): ToolSpec | null {
-    const item = this.inventory[this.selectedSlot];
-    if (!item) {
+    const item = this.session.held();
+    if (item === null) {
       return null;
     }
     return toolSpec(item.id) ?? null;
@@ -535,8 +670,8 @@ export class Game {
    * (loam, timber, rubble) for a block.
    */
   private heldBlockId(): BlockId | null {
-    const item = this.inventory[this.selectedSlot];
-    if (!item) {
+    const item = this.session.held();
+    if (item === null) {
       return null;
     }
     return ALL_BLOCK_IDS.includes(item.id as BlockId) ? (item.id as BlockId) : null;
@@ -595,9 +730,15 @@ export class Game {
         this.act(true);
         return;
       }
+      // T83: eat what is in hand.
+      if (event.code === "KeyG") {
+        this.eat();
+        return;
+      }
       // Number keys select a hotbar slot.
       if (/^Digit[1-9]$/.test(event.code)) {
         this.selectedSlot = Number(event.code.slice(-1)) - 1;
+        this.session.select(this.selectedSlot);
         return;
       }
       this.keys.add(event.code);
@@ -629,6 +770,11 @@ export class Game {
     window.addEventListener("blur", () => {
       this.dragging = false;
       this.breaking = false;
+      // The held keys must go too. A keyup is not delivered when the window
+      // loses focus, so a key held at that moment stays down forever - and
+      // the jump assist only fires on the RISING edge, so a stuck Space key
+      // would leave the player unable to jump at all.
+      this.keys.clear();
     });
     window.addEventListener("contextmenu", (event) => event.preventDefault());
     window.addEventListener("mousemove", (event) => {
@@ -681,6 +827,38 @@ export class Game {
         const at = this.pickBlock();
         return at ? this.engine.blockAt(at.x, at.y, at.z) : null;
       },
+      carried: () =>
+        this.session.carried.slots.map((slot) => ({ id: slot.id, count: slot.count })),
+      dropped: () => this.session.droppedItems().length,
+      // T96: the drops the RENDERER has actually drawn. The session's
+      // count above is the logic; this is the visual. They must agree -
+      // an item the session knows about that the renderer never drew is
+      // the invisible-item bug this task exists to close.
+      drawnDrops: () =>
+        this.renderer.droppedItems.map((drop) => ({
+          id: drop.id,
+          x: drop.x,
+          y: drop.y,
+          z: drop.z,
+          size: drop.size,
+          minU: drop.minU,
+          maxU: drop.maxU,
+          minV: drop.minV,
+          maxV: drop.maxV,
+          // Where the drop should be ON THE SCREEN. A browser test
+          // samples these pixels, which is the only check that cannot
+          // pass on a mesh nobody can see.
+          screen: this.renderer.dropScreenBounds(drop),
+        })),
+      // The session's own view of the items on the ground, so a test can
+      // compare WHERE the renderer drew them with where they are.
+      droppedItems: () =>
+        this.session.droppedItems().map((item) => ({
+          id: item.id,
+          x: item.x,
+          y: item.y,
+          z: item.z,
+        })),
       setBreaking: (holding: boolean): void => {
         this.breaking = holding;
         if (holding) {
@@ -692,6 +870,7 @@ export class Game {
       heldBlock: () => this.renderer.heldBlock,
       viewmodelUvBounds: () => this.renderer.viewmodelUvBounds,
       viewmodelHasFog: () => this.renderer.viewmodelHasFog,
+      viewmodelScreenBounds: () => this.renderer.viewmodelScreenBounds,
     };
   }
 }
@@ -743,6 +922,44 @@ export interface GameHandle {
    * the wrong answer. This is the real id.
    */
   targetedKind(): BlockId | null;
+  /**
+   * What the player is carrying, as the hotbar shows it.
+   *
+   * This is player-facing state - the same thing the hotbar draws - so it
+   * is a fair thing for the browser tests to read. It is how a test checks
+   * that a broken block really became a collectable item.
+   */
+  carried(): readonly { id: string; count: number }[];
+  /** How many items are lying on the ground right now. */
+  dropped(): number;
+  /**
+   * The items the RENDERER has actually drawn on the ground.
+   *
+   * `dropped()` is the gameplay layer's count; this is the renderer's.
+   * They must agree - an item the session knows about that the renderer
+   * never drew is the invisible-item bug, and a browser test that only
+   * reads the logic cannot see it.
+   */
+  drawnDrops(): readonly {
+    id: number;
+    x: number;
+    y: number;
+    z: number;
+    size: number;
+    minU: number;
+    maxU: number;
+    minV: number;
+    maxV: number;
+    /** Where the drop should be on the screen, in CSS pixels. */
+    screen: { x: number; y: number; width: number; height: number } | null;
+  }[];
+  /**
+   * The session's own view of the items on the ground.
+   *
+   * `dropped()` counts them; this says where they are, so a test can
+   * check that the renderer drew them in the right place.
+   */
+  droppedItems(): readonly { id: number; x: number; y: number; z: number }[];
   /** Start or stop holding the break button. */
   setBreaking(holding: boolean): void;
   /** How far through the current break the player is, 0..1, or null. */
@@ -758,6 +975,15 @@ export interface GameHandle {
   viewmodelUvBounds(): { minU: number; maxU: number; minV: number; maxV: number };
   /** Whether the hand's material has fog enabled. It must not. */
   viewmodelHasFog(): boolean;
+  /**
+   * Where the hand is on the screen, in CSS pixels relative to the canvas.
+   *
+   * The hand is parented to the camera, so this box does not move when the
+   * player looks around. A browser test that wants to look at the HAND's
+   * pixels - rather than at a wide region that is mostly background - reads
+   * this and samples exactly the hand.
+   */
+  viewmodelScreenBounds(): { x: number; y: number; width: number; height: number } | null;
 }
 
 /** The handle for the game running in this page, if there is one. */
