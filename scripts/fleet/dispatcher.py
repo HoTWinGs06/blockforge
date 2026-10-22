@@ -58,6 +58,7 @@ FLEET = Path.home() / ".hermes" / "fleet"
 LOGS = FLEET / "logs"
 ATTEMPTS = FLEET / "attempts"
 INTEGRATED_BRANCH = "feature/integrated/m1"
+REPO = Path.home() / "workspace" / "blockforge"
 HERMES = Path.home() / ".hermes" / "hermes-agent" / "hermes"
 MAX_ATTEMPTS = 3
 MAX_TURNS = "500"
@@ -385,30 +386,38 @@ def reap_completed() -> None:
         if t_.get("status") == "done" and t_.get("owner") in ROLES:
             done_by_owner.setdefault(t_["owner"], []).append(t_)
 
+    # The reap merges into the canonical repo's CHECKED-OUT branch. If that is
+    # not the integrated branch, a reap would land role work on main - or on
+    # any other branch - with no human watching. Refuse instead.
+    rc, head, _err = run(["git", "-C", str(REPO), "rev-parse", "--abbrev-ref", "HEAD"], timeout=60)
+    if head.strip() != INTEGRATED_BRANCH:
+        log(f"skip reap: {REPO} is on {head.strip() or '?'}, not {INTEGRATED_BRANCH}")
+        return
+
     for role, done_tasks in done_by_owner.items():
         wt = ROLES[role][0]
         if not wt.exists():
             continue
         rc, branch, _err = run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"], timeout=60)
         branch = branch.strip()
-        if not branch or branch in ("main", INTEGRATED):
+        if not branch or branch in ("main", INTEGRATED_BRANCH):
             continue
         # is the branch actually ahead of the integrated branch?
         rc, count, _err = run(
-            ["git", "-C", str(wt), "rev-list", "--count", f"{INTEGRATED}..{branch}"], timeout=60)
+            ["git", "-C", str(wt), "rev-list", "--count", f"{INTEGRATED_BRANCH}..{branch}"], timeout=60)
         if rc != 0 or not count.strip() or count.strip() == "0":
             continue
         # has this branch already been merged?
         rc, contains, _err = run(
-            ["git", "-C", str(wt), "branch", "--contains", branch, "--list", INTEGRATED], timeout=60)
-        if INTEGRATED in (contains or ""):
+            ["git", "-C", str(wt), "branch", "--contains", branch, "--list", INTEGRATED_BRANCH], timeout=60)
+        if INTEGRATED_BRANCH in (contains or ""):
             continue
         ids = ", ".join(t_["id"] for t_ in done_tasks)
         rc, out, err = run(["git", "-C", str(REPO), "merge", "--no-edit", branch], timeout=300)
         if rc == 0:
             sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                                  capture_output=True, text=True, timeout=60).stdout.strip()
-            log(f"REAPED {branch} into {INTEGRATED} (tasks {ids}) -> {sha}")
+            log(f"REAPED {branch} into {INTEGRATED_BRANCH} (tasks {ids}) -> {sha}")
         else:
             run(["git", "-C", str(REPO), "merge", "--abort"], timeout=60)
             log(f"REAP CONFLICT on {branch} (tasks {ids}) - left for a human: {(err or out)[:160]}")
@@ -430,6 +439,13 @@ def main() -> int:
         return 0
 
     running = live_agents()
+    # The reap runs FIRST, on every pass, before any early return. It used to
+    # sit at the END of main(), behind the "already running" return below, so
+    # while the fleet was at capacity - which is most of the time - the reap
+    # was never reached and completed role work sat on its branch. Reaping is
+    # a git merge, not an agent: it does not compete for the agent slot
+    # budget, which is the resource that return is actually protecting.
+    reap_completed()
     if running >= MAX_CONCURRENT:
         log(f"pass: {running} agent(s) already running, limit {MAX_CONCURRENT}")
         return 0
@@ -488,10 +504,8 @@ def main() -> int:
             dispatched += 1
         else:
             log(f"lock race on {role}; {task_id} launched as pid {pid} without a lock")
-    reap_completed()
     log(f"pass complete: {dispatched} dispatch(es), {live_agents()} agent(s) running, host {why}")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
