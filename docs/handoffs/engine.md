@@ -710,3 +710,119 @@ above, minus the timestamp and the milestone tag.
   where the fix belongs. Not fixed under T90; it is a separate task.
 - **T100** → added, owner `renderui`: wire the assist into `src/main.ts`,
   which is RENDER/UI's file. The exact diff is in the T100 note and above.
+
+---
+
+## T93 — the falling body must not land on top of a block it fell past
+
+**Status: DONE. Commit `773de42855d5f4aa420f75d2d4ec22ea2ff3c4c3` on
+`feature/engine/m1` in `~/workspace/worktrees/bf-engine`.**
+
+### What the bug actually was
+
+Two defects, not one. Both leave the player ABOVE the surface they were
+falling to, which is why the symptom looked like "the player floats".
+
+**1. THE FLOAT — the vertical axis was resolved before the horizontal one.**
+`moveOnce` resolved X, then Y, then Z. The landing was therefore decided
+at a position the body had already left: a body that slid off a ledge in
+Z kept the height it had landed on and hovered above the ground it had
+just walked past. **The Y axis now runs LAST**, so the landing is decided
+at the body's FINAL horizontal position.
+
+**2. THE LIFT — the landing took the top of the highest block the body
+OVERLAPPED.** The body is 1.8 blocks tall, so as it descends its head
+clips blocks above its feet. `Math.max(...hits.map(([, by]) => by + 1))`
+picked the top of the tallest of those, so a block at head height lifted
+the body onto its top — the body came to rest on a block it had just
+fallen past. **A falling body now lands only on a surface at or below
+where its feet started.** A block whose top is above that is one the body
+has already fallen past.
+
+The one thing that is NOT a surface: a block the body's feet are already
+inside. A body that starts inside a solid is still pushed out of its top
+(there is no other way out of a solid), which is the old behaviour and is
+what keeps a body from sinking through the world.
+
+### How it was measured
+
+A 3000-trial fuzz over random terrain, with the bodies walking using the
+GAME's own move pattern (`src/main.ts` does an X move, then a Z move,
+then `stepPhysics` for gravity):
+
+| build | floats | embeds | lifts |
+|---|---|---|---|
+| HEAD (before) | 870 | 0 | 9 |
+| this fix | **0** | 0 | 3 |
+
+The 3 remaining lifts are the legitimate one-block step-up — a rise, not
+a bug.
+
+I also ran the variants apart, to be sure each change earns its place:
+**the axis reorder alone takes the floats to 0**; the surface filter alone
+does not (870 → 872). So the reorder is what fixes the float, and the
+surface filter is what stops the lift onto a block the body fell past.
+Both are needed.
+
+### Gates (all green, on the committed tree)
+
+- `npm run typecheck` → exit 0
+- `npm run lint` → exit 0, 0 errors (7 pre-existing warnings in
+  `scripts/verify.mjs`, not my files)
+- `npm run build` → exit 0
+- `npx vitest run` → 224 passed (224), 16 files — every pre-existing
+  contract still holds
+- `npm run gate:selfcheck` → engine self-check PASSED, mesh self-check PASSED
+- `npm run gate:determinism` (G6) → PASS, 5 seeds identical across fresh
+  processes
+- `npm run gate:bench` (G3) → PASS, avg 4.480 ms/chunk, p95 5.184 ms,
+  budget 16 ms
+
+### The regression is pinned — in ENGINE's file
+
+`tests/` is the TEST AUTHOR's, so the two new assertions live in
+`scripts/selfcheck/engineCheck.ts` (ENGINE's own, and it runs in
+`gate:selfcheck`):
+
+- `a body that walks off a ledge does not hover at the ledge's height`
+- `a falling body does not land on top of a block it fell past`
+
+**Both FAIL on the old `physics.ts` and PASS on the fix.** I verified this
+by running the self-check against HEAD's physics.ts and reading the
+output back: 2 check(s) failed on HEAD, PASSED on the fix.
+
+### For the TEST AUTHOR (behaviour contracts to pin in `tests/physics.test.ts`)
+
+1. **A body that walks off a ledge must not report `onGround` while there
+   is no solid under its feet.** Build the frame the way the game builds
+   it — an X move, then a Z move, then `stepPhysics` — and the body must
+   end up BELOW the ledge's top.
+2. **A falling body must land only on a surface at or below where its
+   feet started.** Geometry that discriminates: floor at `(0,0,0)` (top
+   `y=1`), a wall block at `(1,2,0)` (top `y=3`), and the body 0.6 wide at
+   `x=0.95` so its right shoulder clips the wall column, starting at
+   `y=1.5`, i.e. BELOW the wall's top. It must come to rest at `y=1`, not
+   `y=3`.
+
+### Victory log entry (for the architect to fold into `docs/VICTORIES.md`)
+
+Same reasoning as the T46/T47/T86 entries above: the entry lives here and
+on the board rather than in `docs/VICTORIES.md`, because the brief
+contradicts itself about that file and a concurrent append from a second
+agent produces a content conflict that strands the role's whole branch.
+
+> - [2026-10-22T01:40:00Z] feature — a falling body must not land on top of
+>   a block it fell past (T93). The verifier's report was one bug and it
+>   was two: the vertical axis was resolved BEFORE the horizontal one, so
+>   the landing was decided at a position the body had already left, and a
+>   body that slid off a ledge hovered above the ground it had just walked
+>   past; and the landing took the top of the highest block the body
+>   OVERLAPPED, and the body is 1.8 blocks tall, so a block at head
+>   height could lift it onto its top. `src/core/physics.ts` now resolves
+>   the Y axis LAST and lands a falling body only on a surface at or below
+>   where its feet started. Measured on a 3000-trial fuzz over random
+>   terrain using the game's own move pattern: floats 870 → 0, embeds 0,
+>   lifts 9 → 3 (the 3 are the legitimate one-block step-up). 224/224
+>   existing tests still pass, and the two new assertions in
+>   `scripts/selfcheck/engineCheck.ts` FAIL on the old code and PASS on
+>   this one. Commit 773de42. — M1
