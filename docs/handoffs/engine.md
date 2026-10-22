@@ -999,3 +999,18 @@ carries them.
 mechanism rather than by hand. The remaining gap is that a reaped branch is
 merged whole, so half-finished commits of a role's NEXT task can ride along
 with a finished one. Tightening that is the ARCHITECT's call.
+
+
+---
+
+## Victory log entry (for the architect to fold into docs/VICTORIES.md)
+
+- [2026-10-22T02:24:02+0000] fleet - the dispatcher's automatic reap now
+  actually runs - evidence: `grep -c REAPED ~/.hermes/fleet/dispatcher.log`
+  went 0 -> 4 on the first pass after the fix (engine/m1 -> 5a2184f,
+  test-author/m1 -> d7b5ea3, netcode/m1 -> cdea62b, redteam/m1 -> 68569ca);
+  cron.log tracebacks 15 -> 0; `npm run check` on the reaped
+  feature/integrated/m1 @ 68569ca = ALL GREEN 6/6 exit 0, 349 passed / 3
+  expected fail, G6 5 seeds identical across fresh processes - commits
+  1d0836d (the three-bug fix), 5a2184f (the reap lock) on
+  feature/engine/m1 - M1
