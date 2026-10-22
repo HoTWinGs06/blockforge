@@ -3,13 +3,43 @@
 The TEST AUTHOR's own file. Appended to, never overwritten. The board is the
 source of truth; this is the durable copy for the next agent.
 
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+It is here rather than appended to `docs/VICTORIES.md` for the same reason
+as the engine's T46/T47 and the render's T94 entries: a concurrent append
+from a second agent produces a CONTENT CONFLICT, and the dispatcher's reap
+skips any merge that conflicts, so an append from a role branch can strand
+the role's own work.
+
+- [2026-10-22T02:41:00Z] testfix — the player-hand guard now measures the
+  HAND, not the background. The T71 guard averaged a wide region that was
+  85% world (6939 hand pixels out of 46080) and compared it against a sky
+  patch at a different elevation, so its verdict was a property of the
+  camera pose (2 PASS / 6 FAIL across 8 identical runs) and it REWARDED a
+  broken hand: a scan of the whole RGB cube showed the only colours that
+  could satisfy it were near-black, so the black hand of the T94 bug
+  passed while a correctly lit hand failed. The rewrite uses the fact that
+  the hand is a child of the CAMERA — it does not move on screen when the
+  player looks around and, since the T94 lighting fix, its shading does not
+  depend on where the player looks either, while the world behind it does
+  move: take a frame, move the camera, take a second frame, and the pixels
+  inside the hand's screen box that are IDENTICAL in both frames are the
+  hand's own pixels. Measured at seven camera poses including the one that
+  broke the old guard, the hand fills 0.801 of its box and shows 14
+  distinct colours at EVERY pose and sits 99..139 from the sky. ARMED and
+  proven: with the T94 lighting bug put back in a scratch tree the same
+  guard fails on "0 of 8658 pixels held still while the world moved" — red
+  on the bug, green on the fix. Evidence: commit 3ae7cb0 on
+  feature/test-author/m1, `npx playwright test e2e/viewmodel.spec.ts` 3
+  passed, `npx vitest run` 224 passed, `npm run typecheck` exit 0, `npm run
+  lint` 0 errors — M1
+
 ---
 
 ## T101 — the T71 hand guard measured the background, not the hand
 
-**Status:** DONE. Commit on `feature/test-author/m1` (SHA at the bottom of
-this section). The change is `e2e/viewmodel.spec.ts` only — one file, in
-the TEST AUTHOR's area.
+**Status:** DONE. Commit `3ae7cb0` on `feature/test-author/m1`. The change
+is `e2e/viewmodel.spec.ts` only — one file, in the TEST AUTHOR's area.
 
 ### The brief
 
