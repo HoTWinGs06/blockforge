@@ -3,6 +3,33 @@
 The TEST AUTHOR's own file. Appended to, never overwritten. The board is the
 source of truth; this is the durable copy for the next agent.
 
+- [2026-10-22T04:18:00Z] testfix - the 2 break-hold browser failures were a
+  TEST-HARNESS RACE, and the fix is MUTATION-PROVEN rather than merely
+  green. The player was AIMING AT NOTHING, and every one of the causes was
+  in the test file, not the game. The play click's pointer-lock warp hands
+  the game one huge mousemove, so after play the camera sat at pitch
+  +0.7896 rad (45.2 deg UP); the old helper asked for a RELATIVE
+  look(-0.6), which from 45 deg up still points at the SKY, so targeted()
+  was null and the target readout was empty. The player also spawns at
+  y=90 and lands at y=64 about 4.0s later, and the old helper slept a fixed
+  600ms, so no ground was within REACH=6. And the second failure ("the game
+  must say which tool is needed") was the SAME null target - with nothing
+  aimed at, act() returns early on its no-hit branch and the message is
+  never set - never a tool-rule failure. The fix aims ABSOLUTELY through
+  the published view(), WAITS for state().onGround, puts the RIGHT tool in
+  the player's hand, and counts game progress in FRAMES because the sim
+  ticks 1/60s per RENDERED FRAME at ~8fps headless, so a wall-clock sleep
+  says nothing about the break timer. It also stopped asking whether BARE
+  HANDS could break the block while the game breaks with the tool in hand,
+  which had made the "holding breaks it" half of the test UNREACHABLE.
+  ARMED and proven: break-on-first-frame, break-never-completes, and
+  wrong-tool-rule-ignored each make the test FAIL; src/main.ts was
+  restored byte-identical after each mutant. Evidence: commit 3ae747b on
+  feature/test-author/m1, e2e/break-hold.spec.ts 3 passed (was 1 passed /
+  2 failed), the full e2e suite 28 passed / 0 failed including the G2
+  zero-console-errors gate, `npx vitest run` 349 passed + 3 expected fail,
+  `npm run typecheck` exit 0, `npm run lint` 0 errors - M1
+
 ### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
 
 It is here rather than appended to `docs/VICTORIES.md` for the same reason
