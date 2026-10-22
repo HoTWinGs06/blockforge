@@ -189,3 +189,104 @@ the `viewmodelScreenBounds()` seam. It is a one-word fix in a file that is
 NOT the TEST AUTHOR's, so it is reported here and on the board rather than
 edited. **Until it is fixed, every agent's finished branch is stranded on
 its own branch**, and downstream agents cannot start from a merged SHA.
+
+---
+
+## T92 — the 2 break-hold browser failures were a HARNESS RACE
+
+**Owner: testauthor. Commit: `3ae747b` on `feature/test-author/m1`. One file:
+`e2e/break-hold.spec.ts`. Nothing outside `e2e/` was touched.**
+
+The verifier's call was right: there was no game bug and no physics bug. The
+two failing tests were failing because **the player was not aiming at
+anything**, and that is a harness problem. Three separate harness problems,
+all of them in the test file.
+
+### The measurements (not a guess)
+
+Each number below was read back out of the running game, not inferred.
+
+1. **The play click turns the camera up 45 degrees.** `before-play` the view
+   was `{yaw: 0, pitch: 0}`. `after-play` it was `{yaw: 1.5336, pitch:
+   0.7896}` — 45.2 degrees UP. The cause is the play button's click: it
+   grabs the pointer, and the browser's pointer lock hands the game one
+   enormous mousemove, which the game turns into camera motion. The old
+   helper then asked for `look(-0.6)` — a **RELATIVE** turn, which from 45
+   degrees up still points at the SKY. `targeted()` came back `null`, so
+   `.bf-target` was empty and "the player must be aiming at a block" failed
+   at `:74`.
+2. **The player may not have landed.** They spawn at `y=90` and land at
+   `y=64`; measured, the landing takes ~4.0s of wall time. The old helper
+   slept a fixed 600ms after the click, so the ray had **no ground within
+   `REACH=6`** and hit nothing. Same null target.
+3. **The second failure was the SAME null target.** "the game must say which
+   tool is needed" got `""` because with nothing aimed at, `act()` returns
+   early on its no-hit branch — so `this.message` is never set and
+   `.bf-message` stays empty. It was never a tool-rule failure.
+
+A fourth, quieter problem, found while fixing the third:
+
+4. **The file was asking the wrong question.** It computed
+   `canBreak(id, null)` — **bare hands** — while the game breaks with the
+   tool in the player's hand. Different questions. The consequence was that
+   the block under the player (`sand`, which needs a *trowel*) could not be
+   broken at all, so the "holding breaks it" half of the test took the
+   *cannot-break* branch: **the test passed without ever proving that
+   holding breaks anything.**
+
+### The fix
+
+- **Aim ABSOLUTELY.** Read `view()`, turn by the delta that reaches the
+  target, and keep asking until the view reads back. That also survives a
+  mousemove that arrives late.
+- **WAIT for `state().onGround`** — the actual precondition — instead of
+  sleeping 600ms and hoping.
+- **Put the RIGHT tool in the player's hand** by pressing its hotbar key, so
+  the hold really does break something.
+- **Count game progress in FRAMES, not milliseconds.** The sim advances one
+  `1/60s` tick per **rendered frame**, and the headless software renderer
+  runs at ~8fps — so "sleep 100ms" is two or three frames, and a wall-clock
+  sleep says nothing about the break timer. Every wait is now a wait for
+  the CONDITION.
+
+### It is MUTATION-PROVEN, not just green
+
+A green test that cannot fail is worthless, so each of these was put back
+into `src/main.ts` and the test was **required to catch it**:
+
+| Mutant put into `src/main.ts` | The test that caught it |
+|---|---|
+| break completes on the first frame | "a quick click must start the break timer" |
+| break never completes | "holding must break a block the tool in hand can break" |
+| the wrong-tool rule ignored | "the game must say which tool is needed" |
+
+`src/main.ts` was restored **byte-identical** after each mutant (`git diff`
+empty, verified). No implementation was changed in the commit.
+
+### Evidence
+
+- `npx playwright test e2e/break-hold.spec.ts` — **3 passed** (was 1
+  passed / 2 failed).
+- `npx vitest run` — **349 passed | 3 expected fail (352)**, 25 files.
+- `npm run typecheck` — exit 0.
+- `npx eslint e2e/break-hold.spec.ts` — clean; `npm run lint` — 0 errors
+  repo-wide (14 pre-existing `no-console` warnings, none in this file).
+
+### What this does NOT do
+
+- It does not touch `src/`, the frozen contract, or anything outside `e2e/`.
+- It adds **no new testing seam**. It uses the one RENDER/UI published
+  (`window.__blockforge`), including `view()`, which the old file never
+  used and which is what makes the absolute aim possible.
+- It does not weaken a single assertion. Two assertions got **stronger**:
+  the quick-click case now also asserts the timer actually STARTED (`> 0`),
+  so it cannot pass by never breaking anything, and the wrong-tool case now
+  also asserts the game names the tool the block needs.
+
+### A note for whoever picks up the next T-number
+
+The dispatcher's reap is still BROKEN (`INTEGRATED` is not defined in
+`fleet-dispatcher.py` line 394 — it is defined as `INTEGRATED_BRANCH`), so
+**finished role branches are still stranded on their own branch** and
+downstream agents cannot start from a merged SHA. It is a one-word fix in a
+file that is NOT the TEST AUTHOR's, so it is reported rather than edited.
