@@ -335,27 +335,9 @@ function moveOnce(
     }
   }
 
-  // Y axis.
-  if (delta.y !== 0) {
-    const candidate = bodyAabb({ x, y: y + delta.y, z }, halfWidth, height);
-    const hits = overlappingBlocks(candidate, world);
-    if (hits.length > 0) {
-      collided = true;
-      if (delta.y < 0) {
-        onGround = true;
-        // Land exactly on top of the highest block that was hit.
-        y = Math.max(...hits.map(([, by]) => by + 1));
-      } else {
-        // Stop with the head exactly under the lowest block that was hit.
-        y = Math.min(...hits.map(([, by]) => by)) - height;
-      }
-      vy = 0;
-    } else {
-      y = candidate.minY;
-    }
-  }
-
-  // Z axis.
+  // Z axis. It runs BEFORE the vertical axis so that the landing is
+  // resolved at the position the body actually ends up in: a body that
+  // slides off a ledge in Z must not keep the height it landed on.
   if (delta.z !== 0) {
     const candidate = bodyAabb({ x, y, z: z + delta.z }, halfWidth, height);
     const hits = overlappingBlocks(candidate, world);
@@ -384,6 +366,48 @@ function moveOnce(
       }
     } else {
       z = candidate.minZ + halfWidth;
+    }
+  }
+
+  // Y axis, LAST: the landing must be decided at the body's FINAL
+  // horizontal position. Resolving it earlier left the body resting on a
+  // surface it had already slid off, so the player floated above the
+  // ground they had just walked past.
+  if (delta.y !== 0) {
+    const candidate = bodyAabb({ x, y: y + delta.y, z }, halfWidth, height);
+    const hits = overlappingBlocks(candidate, world);
+    if (delta.y < 0) {
+      collided = hits.length > 0;
+      // The surfaces the feet can come to rest on: blocks whose top face
+      // is at or below where the feet STARTED.
+      //
+      // This is the bug this fixes. A block whose top is ABOVE that is one
+      // the body has already fallen PAST, and landing on it would leave
+      // the body resting on top of a block it fell past, hovering above
+      // the ground it was actually falling to.
+      const surfaces = hits.filter(([, by]) => by + 1 <= y + EPSILON);
+      if (surfaces.length > 0) {
+        onGround = true;
+        // Land exactly on top of the highest block the feet reached.
+        y = Math.max(...surfaces.map(([, by]) => by + 1));
+        vy = 0;
+      } else if (hits.some(([, by]) => by < y && by + 1 > y)) {
+        // The feet started inside a solid. The only way out of a solid is
+        // out of its top, so push the body up onto the block it is in.
+        onGround = true;
+        y = Math.max(...hits.map(([, by]) => by + 1));
+        vy = 0;
+      } else {
+        // Nothing under the feet at all: the body keeps falling.
+        y = candidate.minY;
+      }
+    } else if (hits.length > 0) {
+      collided = true;
+      // Stop with the head exactly under the lowest block that was hit.
+      y = Math.min(...hits.map(([, by]) => by)) - height;
+      vy = 0;
+    } else {
+      y = candidate.minY;
     }
   }
 

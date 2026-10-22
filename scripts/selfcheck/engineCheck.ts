@@ -229,6 +229,107 @@ const world = {
   check("the body did not fall through the floor", Math.abs(y - 1) < 1e-6, `y=${y}`);
 }
 
+// 9b. T93: a falling body must not end up ABOVE the surface it fell past.
+//
+// Two defects, one root cause each.
+//
+// (a) THE FLOAT. The vertical axis was resolved BEFORE the horizontal one,
+// so a body that slid off a ledge kept the height it had landed on and
+// hovered above the ground it had just walked past. The landing must be
+// decided at the body's FINAL horizontal position.
+//
+// (b) THE LIFT. The landing took the top of the highest block the body
+// OVERLAPPED, so a block at head height could lift the body onto its top.
+// A falling body must land only on a surface at or below where its feet
+// started.
+//
+// Both are checked here, in the engine's own self-check because tests/ is
+// the TEST AUTHOR's file.
+{
+  // (a) A body that walks off the end of a ledge must FALL, not hover at
+  // the ledge's height. The world is a one-block-deep ledge along z, and
+  // the body walks off its end in +Z.
+  //
+  // The frame is the GAME's frame: an X move, then a Z move, then the
+  // gravity move - which is what src/main.ts does every tick.
+  const ledge = solidWorldFromBlocks([[0, 0, 0]]);
+  let position = { x: 0.5, y: 1, z: 0.5 };
+  let velocity = { x: 0, y: 0, z: 0 };
+  for (let i = 0; i < 30; i++) {
+    const step = stepPhysics(position, velocity, 1 / 60, ledge);
+    position = step.position;
+    velocity = step.velocity;
+    if (step.onGround) break;
+  }
+  check("a body comes to rest on top of the ledge", Math.abs(position.y - 1) < 1e-6, `y=${position.y}`);
+
+  let hovered = false;
+  for (let tick = 0; tick < 60 && !hovered; tick++) {
+    const x = moveWithCollisions(position, velocity, { x: 0, y: 0, z: 0 }, ledge);
+    position = x.position;
+    velocity = { ...x.velocity, z: 1 };
+    const z = moveWithCollisions(
+      position,
+      { ...velocity, x: 0 },
+      { x: 0, y: 0, z: 1 / 60 },
+      ledge,
+    );
+    position = z.position;
+    velocity = { ...z.velocity, z: 1 };
+    const g = stepPhysics(position, velocity, 1 / 60, ledge);
+    position = g.position;
+    velocity = g.velocity;
+    // The body says it is on the ground: is there ground under its feet?
+    if (g.onGround) {
+      const layer = Math.floor(position.y - 1e-6);
+      let under = false;
+      for (
+        let bx = Math.floor(position.x - 0.3);
+        bx <= Math.floor(position.x + 0.3 - 1e-9) && !under;
+        bx++
+      ) {
+        for (
+          let bz = Math.floor(position.z - 0.3);
+          bz <= Math.floor(position.z + 0.3 - 1e-9) && !under;
+          bz++
+        ) {
+          if (ledge.isSolid(bx, layer, bz)) under = true;
+        }
+      }
+      if (!under) hovered = true;
+    }
+  }
+  check(
+    "a body that walks off a ledge does not hover at the ledge's height",
+    !hovered,
+    `y=${position.y}`,
+  );
+
+  // (b) A falling body must not land on top of a block it fell PAST.
+  //
+  // The floor's top is y=1. The wall block at x=1 spans y=2..3, so its top
+  // is y=3. The body is 0.6 wide, so at x=0.95 its right shoulder overlaps
+  // the wall column as it descends past it, and it starts BELOW the wall's
+  // top - so the wall is a block it fell PAST.
+  const wall = solidWorldFromBlocks([
+    [0, 0, 0],
+    [1, 2, 0],
+  ]);
+  let falling = { x: 0.95, y: 1.5, z: 0.0 };
+  let fallVelocity = { x: 0, y: 0, z: 0 };
+  for (let i = 0; i < 60; i++) {
+    const step = stepPhysics(falling, fallVelocity, 1 / 60, wall);
+    falling = step.position;
+    fallVelocity = step.velocity;
+    if (step.onGround) break;
+  }
+  check(
+    "a falling body does not land on top of a block it fell past",
+    Math.abs(falling.y - 1) < 1e-6,
+    `y=${falling.y} (expected 1, the floor's top; 3 would be the wall's top)`,
+  );
+}
+
 // 10. chunkIndex() must not bypass the frozen blockIndex() guard (E3).
 // An unchecked index aliases: chunkIndex(16,0,0) used to return 16, the
 // storage slot of block (0,0,1), so an out-of-range x silently wrote into
