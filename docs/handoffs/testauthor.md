@@ -444,3 +444,69 @@ sweep, so green there is correct) and two of its tests sweep EVERY possible
   coverage, build) - the coverage floor stayed green through the merge -
   and npx vitest run 407 passed / 1 expected fail / 0 failed, 26 files -
   M3
+
+- [2026-10-22T05:22:00Z] testfix - T99 is FIXED: the purity scanner now catches a
+  DOM global reached through `globalThis`, and the last armed stub in the
+  suite is gone. RED-TEAM's T4 finding was real and narrow: the DOM-global
+  rule matched `BANNED_DOM_GLOBALS` on a bare Identifier node, so a bare
+  `window` was caught and `globalThis.window` was NOT - in the latter the
+  `window` is a property NAME, not an identifier reference. The asymmetry
+  was narrow (the scanner resolves the dotted callee name for CALLS, so
+  `globalThis.Date.now()` WAS caught) but real. I reproduced it by
+  EXECUTION against the real scanner before touching anything: bare `window`
+  -> `dom-global@1:11`; `globalThis.window` -> NO VIOLATIONS; same for
+  `globalThis.document`, `globalThis.localStorage` and `globalThis['window']`.
+  The fix reports the property name when the object of a property access is
+  the identifier `globalThis`, and it covers the two sibling spellings of
+  the same dependency that the same probe found: element access
+  (`globalThis['window']`) and destructuring (`const { window } = globalThis`).
+  An ALIASED global (`const g = globalThis; g.window`) is still NOT detected -
+  that needs flow analysis, not a syntactic rule - and it is now written down
+  as a `shortcut:` limit in the code instead of being a silent hole.
+  THE FALSE-POSITIVE DIRECTION IS PINNED TOO, and it is where the second
+  real bug turned up: `foo.window`, `obj.globalThis.window`,
+  `globalThis.foo` and a locally declared `globalThis` all stay clean,
+  because only the REAL global object is a DOM dependency. Getting there
+  exposed a PRE-EXISTING false positive - `isGlobalReference` excluded a
+  BindingElement's `name` but not its `propertyName`, so
+  `const { window: w } = someObj` was reported as a DOM global. Same root
+  cause, same one-line fix, and it was a crying-wolf bug in the project's
+  primary guard, not a nit. The armed `it.fails` stub in
+  tests/redteam/test-author-purity-holes.test.ts is now a PLAIN regression
+  guard: the fix landed, so an armed stub is a stale alarm and it is what
+  breaks the shared build. The findings index marks T4 and E5 closed (the
+  engine's T98 fix closed E5 and its stubs were already converted in
+  283d862). MUTATION-PROVEN: with the scanner reverted to its pre-fix state
+  all FOUR T4 guards FAIL (2 in tests/purity.test.ts, 1 in the converted
+  RED-TEAM stub, 1 negative control), and the scanner was restored
+  byte-identical afterwards (diff empty). Evidence: commit 4e8765a on
+  feature/test-author/m1; npm run verify ALL GREEN on all eight steps
+  (typecheck, lint, test, gate:determinism, gate:bench, gate:selfcheck,
+  coverage, build); npx vitest run 411 passed / 0 failed / 0 expected fail,
+  26 files; npm run typecheck exit 0; npm run lint 0 errors (14 pre-existing
+  no-console warnings in server/ and scripts/, none in the files I touched)
+  - M1
+
+### Victory log entry (the architect folds this into docs/VICTORIES.md centrally)
+
+It is here rather than appended to `docs/VICTORIES.md` for the same reason
+as the engine's T46/T47 and the render's T94 entries: a concurrent append
+from a second agent produces a CONTENT CONFLICT, and the dispatcher's reap
+skips any merge that conflicts, so an append from a role branch can strand
+the role's own work.
+
+```
+[2026-10-22T05:22:00Z] testfix - the purity scanner no longer lets a DOM
+global through `globalThis` - RED-TEAM's T4 finding (T99) is FIXED: a bare
+`window` was caught and `globalThis.window` was not, because the rule
+matched BANNED_DOM_GLOBALS on a bare Identifier and in `globalThis.window`
+the `window` is a property NAME - the fix reports the property name when
+the object of a property access is the identifier `globalThis`, and covers
+the sibling spellings (element access, destructuring); the false-positive
+direction is pinned too, and fixing it removed a PRE-EXISTING crying-wolf
+bug (`const { window: w } = someObj` was reported as a DOM global) - the
+last armed stub in the suite is now a plain regression guard - MUTATION-PROVEN
+(4 of 4 T4 guards FAIL on the pre-fix scanner, restored byte-identical
+afterwards) - commit 4e8765a, 411 passed / 0 failed / 0 expected fail, 26
+files, `npm run verify` ALL GREEN on all eight steps - M1
+```
