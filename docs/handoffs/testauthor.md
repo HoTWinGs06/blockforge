@@ -317,3 +317,83 @@ The dispatcher's reap is still BROKEN (`INTEGRATED` is not defined in
 **finished role branches are still stranded on their own branch** and
 downstream agents cannot start from a merged SHA. It is a one-word fix in a
 file that is NOT the TEST AUTHOR's, so it is reported rather than edited.
+
+- [2026-10-22T04:55:00Z] testcrafting - T95: src/core/crafting is now COVERED
+  and gate G1 (the 85% coverage floor) is GREEN again. The crafting engine
+  landed in src/core/crafting/ untested, which dropped the floor from
+  92.74% to 76.41% and failed it on all four thresholds - the same shape of
+  problem as T55, and the fix was mine to make because tests/ is mine.
+  tests/crafting.test.ts (56 tests) now pins all SEVEN behaviours the board
+  listed: a shaped recipe matches only where its pattern is and only when
+  every cell the pattern does not cover is empty (four planks in the corner
+  of a 3x3 make a craftbench; a stray in the fifth cell stops the match; the
+  same 2x2 also works in the bottom-right corner and in the 2x2 inventory
+  grid); a shapeless recipe matches wherever the item sits; a tag accepts a
+  family (four rubble AND four slate AND a mix all make masonry, and a slate
+  tool comes out of rubble); a 3x3 recipe does not match a 2x2 grid; the
+  same grid always gives the same recipe id AND the same consumed cell
+  indices, and the table is searched in a fixed order; all sixteen frozen
+  TOOL_SPECS have a recipe whose result carries that tool's contract
+  durability; and a recipe needing ['#rock','slate'] against a grid of
+  slate and rubble matches by giving #rock the rubble - the augmenting-path
+  matcher, not a greedy pass. Two of the tests are EXHAUSTIVE rather than
+  illustrative: every possible 2x2 and 3x3 grid (528 of them) is swept to
+  prove the consumed cells are exactly the occupied ones and that the
+  matcher is a pure function of the grid. The suite is MUTATION-PROVEN
+  rather than merely green: tests/mutate-crafting.sh breaks one rule at a
+  time in the engine and requires the tests to go red - a tag that stops
+  accepting a family (9 failures), uncovered cells that stop having to be
+  empty, the augmenting path turned into a greedy pass, the recipe table
+  searched in reverse, spending an ingredient swallowing the whole stack,
+  and a tool recipe forgetting its durability. All six are CAUGHT. The
+  seventh mutant removes a size guard in matchShaped, and the harness
+  PROVES that one is an EQUIVALENT MUTANT rather than assuming it: it
+  sweeps every grid before and after the mutation and the 527 fingerprints
+  are byte-identical, so green there is the CORRECT result and not a test
+  gap. src/core/crafting/ is restored byte-identical after every mutant
+  (git diff empty, verified). Evidence: commit d1fb8a8 on
+  feature/test-author/m1; coverage 76.38% -> 95.08% lines / 94.55% stmts /
+  94.59% funcs / 89.63% branches, src/core/crafting itself 100% lines /
+  100% stmts / 100% funcs / 97.7% branches; `npm run verify` ALL GREEN on
+  all eight steps (typecheck, lint, test, gate:determinism, gate:bench,
+  gate:selfcheck, coverage, build); `npx vitest run` 405 passed / 3 expected
+  fail / 0 failed, 26 files; the gate was verified in BOTH directions
+  (`--exclude tests/crafting.test.ts` still fails with the four threshold
+  ERRORs, so the floor really bites); `npm run typecheck` exit 0;
+  `npm run lint` 0 errors (14 pre-existing no-console warnings, none in my
+  files) - M3
+
+### What this does NOT do
+
+- It does not touch `src/`. The engine is GAMEPLAY's and I edited nothing
+  under `src/core/crafting/`.
+- It does not re-export the crafting surface from `src/core/index.ts`. The
+  note in `src/core/crafting/index.ts` says that barrel is the ARCHITECT's,
+  so the tests import from `../src/core/crafting/index.js` directly.
+- It does not add a testing seam to the engine. Everything is asserted
+  through the module's own public API.
+
+### One FINDING for GAMEPLAY (not a blocker, no test depends on it)
+
+The `smeltforge` recipe in `src/core/crafting/recipes.ts` lists its
+`ingredients` as a 3x3 FLAT array WITH a hole:
+`['#rock','#rock','#rock','#rock','','#rock','#rock','#rock','#rock']` -
+nine entries, one of them the empty string - while its `shape` is the 3x3
+ring whose flattened non-empty tokens are eight. So `recipe.ingredients`
+disagrees with the file's own doc comment ("For a shaped recipe ...
+`ingredients` is the same tokens flattened out of the shape"): the
+flattened shape drops the hole, this list keeps it. Nothing breaks today
+because `recipeTokens()` and `matchShaped()` both read the SHAPE rather
+than `ingredients` - but anyone reading `recipe.ingredients` directly gets
+a phantom empty ingredient and a count of 9 instead of 8. The list should
+be the eight `'#rock'` tokens with no `''`. My tests deliberately pin
+`recipeTokens()` and `matchGrid()` behaviour and do NOT depend on the
+current `ingredients` length, so nothing I wrote breaks either way and the
+fix is safe to make. GAMEPLAY owns the file; I am not editing it.
+
+### A note for whoever picks up the next T-number
+
+`physics.ts` is the weakest file left in `src/core/` (73.22% stmts, 59.77%
+branches, 74.68% lines) and it is what keeps the project-wide BRANCH
+number at 89.63% rather than in the mid-90s. The next coverage task will
+get more headroom by covering physics than by covering anything else.
