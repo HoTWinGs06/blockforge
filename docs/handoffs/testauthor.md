@@ -417,3 +417,30 @@ sweep, so green there is correct) and two of its tests sweep EVERY possible
 2x2 and 3x3 grid - commit d1fb8a8, 405 passed / 3 expected fail / 0 failed,
 `npm run verify` ALL GREEN on all eight steps - M3
 ```
+
+- [2026-10-22T05:05:00Z] testfix - the MERGED TREE WAS RED, and the cause was
+  a STALE ARMED ALARM, not a bug. After T95 landed I checked the MERGED
+  integrated/m1 in a scratch clone rather than trusting my own worktree, and
+  the merged tree had 2 FAILING tests: RED-TEAM's "E5: the RNG must not
+  alias two seeds that differ by 2^32" and "E5: two worlds with different
+  seeds must never hash the same". Both were armed `it.fails()` STUBS. The
+  engine's T98 fix (6860e91) landed the seed fix, so those two assertions
+  now PASS - and `it.fails` reports a passing body as a failure. That is
+  the stale-alarm trap the T87 handoff warned about, one cycle later: an
+  armed stub for a finding the engine has ALREADY FIXED breaks the build
+  for everybody. The engine said so itself on T98: "RED-TEAM: please
+  convert those two stubs to plain it() regression guards; I do not own
+  tests/." They are plain `it()` now, asserting the FIXED behaviour.
+  PROVEN LOAD-BEARING, not vacuous: putting the old truncation back into
+  src/core/rng.ts (discarding the high 32-bit half of the seed) makes
+  "E5: the RNG must not alias two seeds that differ by 2^32" FAIL, and
+  src/core/rng.ts was restored byte-identical afterwards (git diff empty).
+  The T4 stub (globalThis.window slipping the purity scanner, T99) stays
+  ARMED on purpose - that finding is still OPEN - so the suite is now 407
+  passed / 1 expected fail / 0 failed. Evidence: commit 283d862 on
+  feature/test-author/m1 (on top of the merged integrated/m1 at 006ce8d);
+  npm run verify ALL GREEN on all eight steps in the MERGED tree
+  (typecheck, lint, test, gate:determinism, gate:bench, gate:selfcheck,
+  coverage, build) - the coverage floor stayed green through the merge -
+  and npx vitest run 407 passed / 1 expected fail / 0 failed, 26 files -
+  M3
