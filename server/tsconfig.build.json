@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": "../node_modules/.cache/blockforge-server",
+    "rootDir": "..",
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts", "../src/core/**/*.ts", "../src/net/**/*.ts"]
+}
