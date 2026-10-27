@@ -76,7 +76,7 @@ describe("T1 — the purity scan must reach subdirectories of src/core", () => {
     const topLevel = readdirSync(CORE_DIR).filter((f) => f.endsWith(".ts")).length;
     expect(all.length).toBeGreaterThanOrEqual(topLevel);
     // The engine's load-bearing files must all be in the list.
-    const names = all.map((f) => f.split("/").pop());
+    const names = all.map((f) => f.split(/[\\/]/).pop());
     for (const name of ["world.ts", "noise.ts", "rng.ts", "meshing.ts", "physics.ts"]) {
       expect(names).toContain(name);
     }

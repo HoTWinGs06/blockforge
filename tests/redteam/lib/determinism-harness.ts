@@ -35,7 +35,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fileURLToPath as toFileUrl } from "node:url";
 import ts from "typescript";
@@ -65,7 +65,7 @@ export function hashText(text: string): string {
 export function emittedPathFor(outDir: string, sourceFile: string): string {
   const rel = sourceFile.startsWith(REPO_ROOT)
     ? sourceFile.slice(REPO_ROOT.length + 1)
-    : sourceFile.replace(/^\//, "");
+    : basename(sourceFile);
   return join(outDir, rel.replace(/\.ts$/, ".js"));
 }
 
