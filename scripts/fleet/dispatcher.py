@@ -512,7 +512,8 @@ def _reap_locked() -> None:
             post_fail: list[str] = []
             genv = _gate_env()
             for label, cmd in (("typecheck", ["npm", "run", "typecheck"]),
-                               ("lint", ["npm", "run", "lint"])):
+                               ("lint", ["npm", "run", "lint"]),
+                               ("test", ["npm", "run", "test"])):
                 rr, out2, err2 = run(cmd, cwd=REPO, timeout=900, env=genv)
                 if rr != 0:
                     post_fail.append(f"{label} failed on the landed tree:\n" + (out2 or err2).strip())
