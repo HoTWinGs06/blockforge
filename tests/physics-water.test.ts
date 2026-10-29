@@ -8,7 +8,6 @@
  * output, any order, any process. No Math.random, no Date.now, no DOM.
  */
 import { describe, it, expect } from "vitest";
-import * as fc from "fast-check";
 import {
   GRAVITY,
   WATER_BUOYANCY,
@@ -18,8 +17,6 @@ import {
   SWIM_ACCELERATION,
   SWIM_RISE_ACCELERATION,
   FLOW_SPEED,
-  PLAYER_HALF_WIDTH,
-  PLAYER_HEIGHT,
   isFluidBlock,
   submersion,
   flowAt,
@@ -28,8 +25,9 @@ import {
   solidWorldFromBlocks,
   bodyAabb,
 } from "../src/core/physics.js";
-import type { SolidWorld, Vec3 } from "../src/core/physics.js";
+import type { SolidWorld } from "../src/core/physics.js";
 import { BlockId } from "../src/core/types.js";
+import type { Aabb } from "../src/core/types.js";
 
 /* ---------- helpers ---------- */
 function waterWorld(fluids: [number, number, number][]): SolidWorld {
@@ -45,7 +43,7 @@ describe("isFluidBlock (the water identity gate)", () => {
     expect(isFluidBlock(BlockId.Tidewater)).toBe(true);
   });
   it("rejects every solid block id", () => {
-    expect(isFluidBlock(BlockId.Stone)).toBe(false);
+    expect(isFluidBlock(BlockId.Slate)).toBe(false);
     expect(isFluidBlock(BlockId.Voidstone)).toBe(false);
     expect(isFluidBlock(BlockId.Rubble)).toBe(false);
     expect(isFluidBlock(BlockId.Loam)).toBe(false);
@@ -70,11 +68,8 @@ describe("submersion — continuous wet fraction 0..1", () => {
     const w = waterWorld([[0, 0, 0]]);
     // Body fully inside that block (feet at y=0.5, height 1.8 -> y range [0.5, 2.3], 
     // but block only 0..1; to be fully submerged need body inside block)
-    const box = bodyAabb({ x: 0.5, y: 0.5, z: 0.5 }); // centered inside [0,1]^3
     // Box spans [0.2,0.8] x [ -0.4, 1.4] wait bodyAabb centered on feet at y=0.5 => minY=0.5, maxY=2.3 (feet+height)
     // Actually better: make box that fits entirely inside single fluid block
-    const tight = { minX: 0.1, maxX: 0.9, minY: 0.1, maxY: 0.9, minZ: 0.1, maxZ: 0.9 };
-    // But submersion expects Aabb shape; bodyAabb gives standard player size.
     // Use a small custom box fully inside [0,1]^3 by placing feet at y=0.1
     const small = bodyAabb({ x: 0.5, y: 0.1, z: 0.5 }, 0.1, 0.6); // half=0.1, height=0.6 -> y=[0.1,0.7]
     expect(submersion(small, w)).toBeGreaterThan(0.9); // almost fully inside one block
@@ -93,13 +88,13 @@ describe("submersion — continuous wet fraction 0..1", () => {
   it("zero-volume box returns 0", () => {
     const w = waterWorld([[0, 0, 0]]);
     const flat = { minX: 0.5, maxX: 0.5, minY: 0.5, maxY: 0.5, minZ: 0.5, maxZ: 0.5 };
-    expect(submersion(flat as any, w)).toBe(0);
+    expect(submersion(flat as Aabb, w)).toBe(0);
   });
 
   it("multi-block overlap sums correctly and caps at 1", () => {
     const w = waterWorld([[0, 0, 0], [0, 1, 0], [1, 0, 0], [1, 1, 0]]);
     // Large body spanning all four fluid blocks
-    const big = { minX: 0, maxX: 2, minY: 0, maxY: 2, minZ: 0, maxZ: 2 } as any;
+    const big = { minX: 0, maxX: 2, minY: 0, maxY: 2, minZ: 0, maxZ: 2 } as Aabb;
     expect(submersion(big, w)).toBeLessThanOrEqual(1);
     expect(submersion(big, w)).toBeGreaterThan(0.4);
   });
@@ -268,7 +263,6 @@ describe("stepPhysics — water branch (buoyancy, drag, caps, stroke)", () => {
   it("full submersion pushes up when no stroke", () => {
     // Fully inside fluid block
     const w = waterWorld([[0, 0, 0]]);
-    const box = bodyAabb({ x: 0.5, y: 0.1, z: 0.5 }, 0.1, 0.5); // inside [0,1]^3 roughly
     // Step at small dt; should get positive vy from buoyancy (greater than dry)
     const r = stepPhysics({ x: 0.5, y: 0.1, z: 0.5 }, { x: 0, y: -10, z: 0 }, 0.016, w);
     // Even with large downward input, buoyancy should reduce downward speed or reverse
