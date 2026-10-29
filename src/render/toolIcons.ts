@@ -12,7 +12,16 @@ import type { ToolSpec } from "../core/types.js";
 
 const SIZE = 32;
 
-const TIER_PALETTES: Readonly<Record<string, { head: string; handle: string; highlight: string; glow?: string }>> = {
+/**
+ * The tier palettes, one row per tier.
+ *
+ * Exported so the FIRST-PERSON VIEWMODEL (viewmodel.ts, the tool models) and
+ * the 2D hotbar icons here draw from THE SAME palette: a timber mattock in
+ * the hand must be the same timber as its icon in the hotbar. The map is
+ * keyed by string because the frozen contract's ToolTier is a plain union of
+ * four names and this file only needs a fallback access anyway.
+ */
+export const TIER_PALETTES: Readonly<Record<string, { head: string; handle: string; highlight: string; glow?: string }>> = {
   timber:    { head: "#6a4a2c", handle: "#8a6a45", highlight: "#b08a3c" },
   slate:     { head: "#4a4f57", handle: "#6b6f74", highlight: "#8e8b86" },
   ironveil:  { head: "#8a8478", handle: "#a09888", highlight: "#cbb898" },

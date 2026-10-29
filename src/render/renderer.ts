@@ -11,7 +11,7 @@
  */
 
 import * as THREE from "three";
-import type { BlockId, ChunkKey, MeshOutput, PlayerState } from "../core/types.js";
+import type { BlockId, ChunkKey, MeshOutput, PlayerState, ToolSpec } from "../core/types.js";
 import { blockFromOrdinal } from "../core/world.js";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../core/constants.js";
 import { faceUv, getAtlasTexture } from "./textures.js";
@@ -23,6 +23,102 @@ import { Viewmodel } from "./viewmodel.js";
 import { FOG_FAR, FOG_NEAR } from "./viewDistance.js";
 /** How far the player can reach when breaking or placing a block. */
 export const REACH_DISTANCE = 6;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The break-progress crack decal
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One crack texture per fifth of the break bar. */
+const CRACK_STAGES = 5;
+
+/**
+ * The crack tile's edge, in pixels.
+ *
+ * Twice the world atlas's density (TILE_PX 16), so the cracks read finer
+ * than the block faces they sit on.
+ */
+const CRACK_TILE = 32;
+
+/**
+ * A deterministic mini-PRNG for the crack walks.
+ *
+ * Math.random() is forbidden in this project's game code - the world has
+ * to look IDENTICAL every load. This is xorshift32 seeded per stage, so
+ * stage 2 of a crack is stage 2 every single run.
+ */
+function crackRng(seed: number): () => number {
+  let state = Math.floor(seed * 1973 + 9277) >>> 0;
+  return (): number => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 4294967296;
+  };
+}
+
+/**
+ * One crack-stage texture: a 32x32 transparent canvas scored with cracks.
+ *
+ * Stage 0 is a hairline pair of veins; each later stage adds veins, deepens
+ * the cut colour and widens the widest hits, so a nearly-broken block LOOKS
+ * nearly broken. The veins are jittered outward walks from the canvas
+ * centre, each step a small fillRect - crude close up, but at a block's
+ * viewing distance it reads as stone splitting.
+ */
+function makeCrackTexture(stage: number): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = CRACK_TILE;
+  canvas.height = CRACK_TILE;
+  const ctx = canvas.getContext("2d");
+  if (ctx === null) {
+    return new THREE.CanvasTexture(canvas);
+  }
+  const cx = CRACK_TILE / 2;
+  const cy = CRACK_TILE / 2;
+  const rng = crackRng(16 + stage * 137);
+  // Stage 0 has two veins; stage 4 has ten.
+  const veins = 2 + stage * 2;
+  for (let vein = 0; vein < veins; vein++) {
+    let x = cx;
+    let y = cy;
+    const bias = rng() * Math.PI * 2;
+    const steps = 8 + stage * 5;
+    for (let step = 0; step < steps; step++) {
+      const dark = 0.55 + stage * 0.09;
+      ctx.fillStyle = `rgba(16,13,10,${dark.toFixed(2)})`;
+      const w = stage >= 3 && step % 3 === 0 ? 2 : 1;
+      ctx.fillRect(Math.round(x), Math.round(y), w, w);
+      // Step outward with jitter, so the vein kinks instead of running
+      // ruler-straight.
+      const angle = bias + (rng() - 0.5) * 1.8;
+      x += Math.cos(angle) * 1.6;
+      y += Math.sin(angle) * 1.6;
+      // An occasional side chip off the main vein.
+      if (step > 2 && rng() < 0.3) {
+        const side = angle + (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+        const bx = Math.round(x + Math.cos(side) * 2);
+        const by = Math.round(y + Math.sin(side) * 2);
+        ctx.fillRect(bx, by, 1, 1);
+        ctx.fillRect(
+          Math.round(bx + Math.cos(side) * 1.5),
+          Math.round(by + Math.sin(side) * 1.5),
+          1,
+          1,
+        );
+      }
+    }
+  }
+
+  // Same conventions as the atlas texture: crisp nearest-neighbour
+  // sampling, sRGB - otherwise the cracks render blurry or washed.
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
 
 
 
@@ -179,6 +275,16 @@ export class WorldRenderer {
   private readonly overlayScene = new THREE.Scene();
   private readonly meshes = new Map<string, ChunkMesh>();
   private readonly highlight: THREE.LineSegments;
+
+  // ── the crack decal on the block being broken ──
+  // Lazily built on the first showBreak(): five textures, one geometry,
+  // one material, and a box in the WORLD scene so it fogs like the world.
+  private crackMesh: THREE.Mesh | null = null;
+  private crackGeometry: THREE.BoxGeometry | null = null;
+  private crackMaterial: THREE.MeshBasicMaterial | null = null;
+  private crackTextures: THREE.Texture[] = [];
+  /** What the decal currently shows (block key + stage), or null when hidden. */
+  private crackKey: string | null = null;
 
   /** The canvas size in CSS pixels, so a drop can be located on screen. */
   private canvasWidth = 1;
@@ -383,8 +489,73 @@ export class WorldRenderer {
     this.highlight.visible = true;
   }
 
+  /** Hide the wireframe. */
   hideHighlight(): void {
     this.highlight.visible = false;
+  }
+
+  /**
+   * Show the crack decal on the block being broken, at the given progress.
+   *
+   * The stage is floor(progress * 5), clamped: one deterministic texture
+   * per fifth of the break bar. A frame with the same block AND same stage
+   * does nothing - which is the common case while a hold runs, so the
+   * common frame costs one string compare.
+   */
+  showBreak(x: number, y: number, z: number, progress: number): void {
+    const stage = Math.min(
+      CRACK_STAGES - 1,
+      Math.max(0, Math.floor(Math.max(0, Math.min(1, progress)) * CRACK_STAGES)),
+    );
+    const key = `${x},${y},${z},${stage}`;
+    if (this.crackKey === key) {
+      return;
+    }
+    this.ensureCrack();
+    const mesh = this.crackMesh;
+    const material = this.crackMaterial;
+    if (!mesh || !material) {
+      return;
+    }
+    mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+    material.map = this.crackTextures[stage] ?? null;
+    mesh.visible = true;
+    this.crackKey = key;
+  }
+
+  /** Hide the crack decal - the hold stopped, or the block broke. */
+  hideBreak(): void {
+    if (this.crackMesh) {
+      this.crackMesh.visible = false;
+    }
+    this.crackKey = null;
+  }
+
+  /** Build the crack decal once, the first time it is needed. */
+  private ensureCrack(): void {
+    if (this.crackMesh) {
+      return;
+    }
+    for (let stage = 0; stage < CRACK_STAGES; stage++) {
+      this.crackTextures.push(makeCrackTexture(stage));
+    }
+    // A hair larger than the block, so the decal's faces sit a hair
+    // OUTSIDE the block's faces: no z-fighting, and the crack is always
+    // the topmost thing on the surface it is cracking.
+    this.crackGeometry = new THREE.BoxGeometry(1.008, 1.008, 1.008);
+    this.crackMaterial = new THREE.MeshBasicMaterial({
+      map: this.crackTextures[0] ?? null,
+      transparent: true,
+      opacity: 0.92,
+      // The decal never writes depth: it sits on geometry that is already
+      // drawn, ahead of it in the same frame's opaque pass.
+      depthWrite: false,
+      // It IS a world object: it fogs out with the chunk it sits on.
+      fog: true,
+    });
+    this.crackMesh = new THREE.Mesh(this.crackGeometry, this.crackMaterial);
+    this.crackMesh.visible = false;
+    this.scene.add(this.crackMesh);
   }
 
   /**
@@ -431,6 +602,33 @@ export class WorldRenderer {
   /** Set the block the player's hand is holding. */
   setHeldBlock(id: BlockId): void {
     this.viewmodel.setHeldBlock(id);
+  }
+
+  /**
+   * Hold a tool: the fist grips the 3D model built for its kind and tier.
+   *
+   * The spec comes from the FROZEN tool contract (TOOL_SPECS); viewmodel
+   * draws it with the tier palette the hotbar icons use, so a timber
+   * mattock in the hand is the timber mattock of the hotbar.
+   */
+  setHeldTool(spec: ToolSpec): void {
+    this.viewmodel.setHeldTool(spec);
+  }
+
+  /** Hold nothing: the bare fist. */
+  setHeldEmpty(): void {
+    this.viewmodel.setHeldEmpty();
+  }
+
+  /**
+   * Drive the break-swing LOOP.
+   *
+   * main.ts calls this with TRUE for every frame a break hold is running
+   * and FALSE when it stops, so the hand keeps striking for the whole
+   * hold, not once at the end. The one-shot version is swingViewmodel().
+   */
+  swingHold(active: boolean): void {
+    this.viewmodel.setSwinging(active);
   }
 
   /**
@@ -500,6 +698,18 @@ export class WorldRenderer {
       chunk.dispose();
     }
     this.meshes.clear();
+    // The crack decal owns its geometry, material and textures.
+    for (const texture of this.crackTextures) {
+      texture.dispose();
+    }
+    this.crackTextures.length = 0;
+    if (this.crackGeometry) {
+      this.crackGeometry.dispose();
+    }
+    if (this.crackMaterial) {
+      this.crackMaterial.dispose();
+    }
+    this.viewmodel.dispose();
     this.renderer.dispose();
   }
 }
