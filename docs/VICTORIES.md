@@ -74,3 +74,10 @@
 - Board hygiene: stale-done rows closed (T71 hand+walk, T74 clouds, T75 synth music → done; T56 integration-ratification → dropped, answered by history). T72/T73 carry leader notes holding their render halves until T76's reaped state.
 - Lane offers placed one per lane (one-by-one rule): T84 → renderui (crafting UI unparked, data side done at afbebb0), T30 → redteam (cycle 2 unparked — attack water/swim, crafting, survival, server validation), T77 → engine (day/night), T109 → testauthor (pin server/validation.ts anti-cheat rules in vitest — closes the tests-cover-server gap found by recon), T110 → netcode (the game joins a served world — wires the T39 client slice; PROTOCOL_VERSION stays 1), T111 → release (public repo HoTWinGs06/blockforge, the one T54 leftover).
 - Dispatcher verified filling: engine T77 + netcode T110 RUNNING (0/2 → 2/2 within one cron cycle), four further tasks queued.
+
+### 2026-10-29 — T79 M3 mobs (gameplay) — pure mob layer done, f671856
+- Mob layer (spawnMob, updateMobAI, mobDropTable + MOB_DROP_ITEM, stepToward) in src/gameplay/mobs.ts — deterministic from (mob.id, tick) via createRng, no shared-rng order dependency, no Math.random/Date.now.
+- Original names preserved (grazer, flutter, shellback, lurker, snarler); MOB_MAX_HEALTH / MOB_SPEED / AI_TIMER_DEFAULT / DEATH_TIMER_MAX gameplay-owned.
+- FOOD (survival.ts) extended with original mob-meat ids; MOB_DAMAGE already present; drop table wires to item chain.
+- Verification: npm typecheck 0 src errors, eslint 0, build exit 0; node determinism self-check (same tick => identical state); Milo posted (msg 1565368312940994701).
+- Skipped: session tick-loop wiring (engine/main area), A* pathfinding (stepToward affordable), visual mesh / spawn-rate biomechanics (render/world layers).
