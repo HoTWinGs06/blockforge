@@ -135,3 +135,4 @@ T112 post-merge typecheck+lint+**test** with auto-rollback):
   meanwhile (T113 precedent); T118's `dc3ceb0` (procedural tool viewmodels + mining crack
   decals, `feature/render-toolview/m1`) queued for leader merge — its owner is off-lane.
 
+- T117 mob session wiring landed by leader (planned, not crash-recovered, during the provider 429 outage): seeded per-chunk spawn share (ring <= 2, MOB_CAP 48, hostiles outer ring only), per-tick AI in id order, paced blows (20 ticks, none while the player is dead), kills drop loot via mobDropTable, despawn ring 3 with corpse linger; read-only MobView via mobViews().

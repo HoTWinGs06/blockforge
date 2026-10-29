@@ -13,7 +13,12 @@
  */
 
 export { GameplaySession, TICKS_PER_SECOND } from "./session.js";
-export type { BreakOutcome, DroppedItemView, EatOutcome } from "./session.js";
+export type {
+  BreakOutcome,
+  DroppedItemView,
+  EatOutcome,
+  MobView,
+} from "./session.js";
 export {
   advanceSurvival,
   createSurvival,

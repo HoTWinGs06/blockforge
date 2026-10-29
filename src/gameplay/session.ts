@@ -13,6 +13,11 @@
  *                                    whatever the player walked over
  *   "what is the player holding"  -> held(), via the inventory
  *
+ * T117 / M3: THE MOBS LIVE HERE TOO. The session owns them: it decides when
+ * each chunk near the player plays its spawn share, steps the AI once per
+ * tick in id order, hands combat to hurtByMob() and damageMob(), and lets
+ * the renderer and the netcode read the result through mobViews().
+ *
  * THE TICK IS THE CLOCK. Time comes from a tick counter, never from the
  * wall clock, so the same inputs always produce the same world - the same
  * rule the core contract follows.
@@ -22,8 +27,19 @@
  * item in the same place, whatever order the world was updated in.
  */
 
-import type { BlockId, Inventory, ItemStack, MobKind, ToolSpec, Vec3 } from "../core/types.js";
-import { canBreak } from "../core/constants.js";
+import type {
+  BlockId,
+  ChunkKey,
+  Inventory,
+  ItemStack,
+  MobKind,
+  MobState,
+  MobStateKind,
+  ToolSpec,
+  Vec3,
+} from "../core/types.js";
+import { canBreak, CHUNK_SIZE_X, CHUNK_SIZE_Z, WORLD_MIN_Y, WORLD_MAX_Y } from "../core/constants.js";
+import { createRng } from "../core/rng.js";
 import { dropFor } from "./drops.js";
 import {
   addItem,
@@ -40,6 +56,13 @@ import {
   type ItemEntity,
   type SolidProbe,
 } from "./itemEntities.js";
+import {
+  mobDropTable,
+  spawnMob,
+  updateMobAI,
+  DEATH_TIMER_MAX,
+  type MobWorldView,
+} from "./mobs.js";
 import {
   advanceSurvival,
   createSurvival,
@@ -92,6 +115,106 @@ export interface EatOutcome {
   readonly reason: "nothing-held" | "not-food" | "not-hungry" | "dead" | null;
 }
 
+/**
+ * One mob, as the renderer and the netcode are allowed to see it.
+ *
+ * A slice of the full mob state, read-only: who it is, what it is doing,
+ * where it stands and how hurt it is. Outside layers never reach the
+ * internals through this - the timers, the home chunk and the id
+ * bookkeeping stay inside the session.
+ */
+export interface MobView {
+  readonly id: number;
+  readonly kind: MobKind;
+  readonly state: MobStateKind;
+  readonly position: Vec3;
+  readonly yaw: number;
+  readonly health: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mob pacing (T117). The session owns WHEN mobs appear and how      */
+/*  often they may land a blow; the pure layer (mobs.ts) owns WHAT    */
+/*  they do.                                                          */
+/* ------------------------------------------------------------------ */
+
+/** Chunks whose spawn share may be claimed around the player. */
+const SPAWN_RING = 2;
+
+/** A chunk farther away than this may hand its mobs back to the world. */
+const DESPAWN_RING = 3;
+
+/** The most mobs the world holds at once, however far the player walks. */
+const MOB_CAP = 48;
+
+/** Ticks a mob must wait between two blows on the player. */
+const MOB_HIT_REPEAT_TICKS = 20;
+
+/** The chunk a position falls in. */
+function chunkOf(p: Vec3): ChunkKey {
+  return {
+    cx: Math.floor(p.x / CHUNK_SIZE_X),
+    cz: Math.floor(p.z / CHUNK_SIZE_Z),
+  };
+}
+
+/** Chebyshev (king-move) distance between two chunks, in chunk units. */
+function chunkDistance(a: ChunkKey, b: ChunkKey): number {
+  return Math.max(Math.abs(a.cx - b.cx), Math.abs(a.cz - b.cz));
+}
+
+/**
+ * Ring offsets out from a centre chunk, innermost first, ties broken by
+ * cx then cz. A fixed order the plans settle in is what makes the spawn
+ * set reproducible: the same seed ever builds the same mob set.
+ */
+const RING_OFFSETS: readonly ChunkKey[] = (() => {
+  const offsets: ChunkKey[] = [];
+  for (let cx = -SPAWN_RING; cx <= SPAWN_RING; cx += 1) {
+    for (let cz = -SPAWN_RING; cz <= SPAWN_RING; cz += 1) {
+      offsets.push({ cx, cz });
+    }
+  }
+  const origin: ChunkKey = { cx: 0, cz: 0 };
+  return offsets.sort(
+    (a, b) =>
+      chunkDistance(a, origin) - chunkDistance(b, origin) ||
+      a.cx - b.cx ||
+      a.cz - b.cz,
+  );
+})();
+
+/** Mix a chunk into the session salt, so every chunk streams its own roll. */
+function chunkSpawnSeed(seed: number, chunk: ChunkKey): number {
+  return (
+    Math.imul(chunk.cx, 0x85ebca6b) ^
+    Math.imul(chunk.cz, 0xc2b2ae35) ^
+    Math.imul(seed, 0x27d4eb2f)
+  );
+}
+
+/**
+ * Which kind a chunk's pick holds: a passive kind anywhere, and the two
+ * hostile kinds only at the edge of the spawn ring - so the walk in is a
+ * calm one and the danger builds up as the player pushes outward.
+ */
+function plannedKind(
+  rng: ReturnType<typeof createRng>,
+  outerRing: boolean,
+): MobKind {
+  const first = rng.nextFloat();
+  if (outerRing && first >= 0.7) {
+    return first < 0.85 ? "lurker" : "snarler";
+  }
+  const second = rng.nextFloat();
+  if (second < 1 / 3) return "grazer";
+  if (second < 2 / 3) return "flutter";
+  return "shellback";
+}
+
+/** A probe that reports nothing solid: the no-world fallback. */
+const EMPTY_PROBE: SolidProbe = { isSolid: () => false };
+
 /** The player's starting kit: the four timber tools and some blocks. */
 const STARTING_KIT: readonly ItemStack[] = [
   { id: "mattock_timber", count: 1, durability: 60 },
@@ -124,10 +247,21 @@ export class GameplaySession {
    * it does not hurt. This arms the rule after the first landing.
    */
   private fallArmed = false;
+  /** The mobs alive, in id order - the push order is never disturbed. */
+  private mobs: MobState[] = [];
+  /** Chunks that have already played their spawn share. */
+  private readonly mobSpawnedChunks = new Set<string>();
+  /** The counter that names the next mob. */
+  private nextMobId = 1;
+  /** Per-mob blow cooldowns: the tick each mob's next blow may land. */
+  private readonly mobCooldown = new Map<number, number>();
+  /** The salt the whole mob set is derived from. */
+  private readonly spawnSeed: number;
 
-  constructor() {
+  constructor(spawnSeed = 0) {
     const { inventory } = createInventory(STARTING_KIT);
     this.inventory = inventory;
+    this.spawnSeed = spawnSeed;
   }
 
   /** What the player is carrying. */
@@ -215,13 +349,25 @@ export class GameplaySession {
    * fall damage is measured from the player's own height. `activity` is
    * what the player is doing - it decides how fast the belly empties -
    * and `onGround` is what says whether they are standing on something.
+   *
+   * T117: THE MOBS TICK IN THE SAME LOOP. `world` is optional so the
+   * existing callers keep compiling: with a probe the mobs walk on real
+   * ground and stand on the surface; without one they run on the
+   * no-refuse stub and take spawnMob's plain y.
    */
-  update(dt: number, feet: Vec3, activity: Activity = "idle", onGround = true): void {
+  update(
+    dt: number,
+    feet: Vec3,
+    activity: Activity = "idle",
+    onGround = true,
+    world: SolidProbe | null = null,
+  ): void {
     this.tickCarry += dt;
     while (this.tickCarry >= 1 / TICKS_PER_SECOND) {
       this.tickCarry -= 1 / TICKS_PER_SECOND;
       this.tick += 1;
       this.survival = advanceSurvival(this.survival, 1, activity);
+      this.tickMobs(world, feet);
     }
     this.trackFall(feet, onGround);
     const result = collectItems(this.items, this.inventory, feet, this.tick);
@@ -256,6 +402,143 @@ export class GameplaySession {
   }
 
   /**
+   * Step every mob one tick, then let the world keep its promise.
+   *
+   * Order is id order, and each mob is stepped exactly once, so the same
+   * seed and the same ticks ever build the same mob set, whatever the
+   * frame rate did this second.
+   *
+   * The blow rate is paced HERE, not in the pure layer: the AI announces
+   * "attack" every tick the target is in reach, and the blows would land
+   * flat-out if the session did not say no - so a mob needs
+   * MOB_HIT_REPEAT_TICKS ticks between two, and a dead player takes none.
+   */
+  private tickMobs(world: SolidProbe | null, feet: Vec3): void {
+    this.planSpawns(world, feet);
+    const view: MobWorldView = {
+      tick: this.tick,
+      playerPos: { x: feet.x, y: feet.y, z: feet.z },
+      solidAt: world
+        ? (p) => world.isSolid(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))
+        : () => false,
+    };
+    let stepped = this.mobs.map((mob) => updateMobAI(mob, view));
+    for (const mob of stepped) {
+      if (mob.state === "attack" && !this.survival.dead) {
+        const at = this.mobCooldown.get(mob.id) ?? 0;
+        if (this.tick >= at) {
+          this.hurtByMob(mob.kind);
+          this.mobCooldown.set(mob.id, this.tick + MOB_HIT_REPEAT_TICKS);
+        }
+      }
+    }
+    // A chunk that slid out of reach hands its mobs back to the world,
+    // and a corpse whose linger has run out is swept away: nothing mourns
+    // either, and the sweep never touches the loot on the ground.
+    const origin = chunkOf(feet);
+    stepped = stepped.filter((mob) => {
+      if (mob.state === "dead") {
+        return mob.deathTimer > 0;
+      }
+      return chunkDistance(mob.home, origin) <= DESPAWN_RING;
+    });
+    this.mobs = stepped;
+  }
+
+  /**
+   * Give every near chunk its one share of mobs.
+   *
+   * A chunk is claimed exactly once - its claim carries whichever tick
+   * it fell on, and after that it never plays again - so the same seed
+   * and the same walk ever end with the same mob set. Each claim holds
+   * one to three mobs, and the share stops short at the cap: a full
+   * world is a full world, and it stays a full world.
+   */
+  private planSpawns(world: SolidProbe | null, feet: Vec3): void {
+    if (this.mobs.length >= MOB_CAP) {
+      return;
+    }
+    const origin = chunkOf(feet);
+    for (const offset of RING_OFFSETS) {
+      if (this.mobs.length >= MOB_CAP) {
+        return;
+      }
+      const chunk: ChunkKey = { cx: origin.cx + offset.cx, cz: origin.cz + offset.cz };
+      const key = `${chunk.cx}:${chunk.cz}`;
+      if (this.mobSpawnedChunks.has(key)) {
+        continue;
+      }
+      this.mobSpawnedChunks.add(key);
+      const rng = createRng(chunkSpawnSeed(this.spawnSeed, chunk));
+      const share = 1 + Math.floor(rng.nextFloat() * 3);
+      const outerRing = chunkDistance(chunk, origin) >= SPAWN_RING;
+      for (let n = 0; n < share; n += 1) {
+        if (this.mobs.length >= MOB_CAP) {
+          return;
+        }
+        const kind = plannedKind(rng, outerRing);
+        const mob = spawnMob(this.spawnSeed, kind, chunk, this.nextMobId++);
+        this.mobs.push(world === null ? mob : this.standMobOnGround(mob, world));
+      }
+    }
+  }
+
+  /**
+   * The ground decides where a mob stands, not the pure layer's guess.
+   *
+   * spawnMob's plain y is a starts-somewhere square; with a probe the
+   * session walks the column and puts the mob on the first solid block
+   * under open sky, in the cell it already found itself in.
+   */
+  private standMobOnGround(mob: MobState, world: SolidProbe): MobState {
+    const column = Math.floor(mob.position.x);
+    const row = Math.floor(mob.position.z);
+    return {
+      ...mob,
+      position: {
+        x: mob.position.x,
+        y: this.surfaceY(column, row, world),
+        z: mob.position.z,
+      },
+    };
+  }
+
+  /** First y from the sky down that is solid with air above it. */
+  private surfaceY(x: number, z: number, world: SolidProbe): number {
+    for (let y = WORLD_MAX_Y - 1; y > WORLD_MIN_Y; y -= 1) {
+      if (world.isSolid(x, y, z) && !world.isSolid(x, y + 1, z)) {
+        return y + 1;
+      }
+    }
+    return 2; // nothing in the column: keep spawnMob's plain spawn height
+  }
+
+  /**
+   * Drop a dead mob's share where it fell.
+   *
+   * The loot lands at death, not when the corpse is swept away, so the
+   * player watches their prize hit the ground while the body still lies
+   * there.
+   */
+  private dropMobLoot(mob: MobState, world: SolidProbe | null): void {
+    const probe = world ?? EMPTY_PROBE;
+    for (const stack of mobDropTable(mob.kind)) {
+      this.items = [
+        ...this.items,
+        spawnItem(
+          this.nextItemId++,
+          stack,
+          Math.floor(mob.position.x),
+          Math.floor(mob.position.y),
+          Math.floor(mob.position.z),
+          this.tick,
+          probe,
+        ),
+      ];
+    }
+  }
+
+  /**
    * Take damage - from a mob, from a fall, from anything.
    *
    * The amount is the game's business; this is where it lands. Zero
@@ -273,6 +556,58 @@ export class GameplaySession {
    */
   hurtByMob(kind: MobKind): void {
     this.damage(MOB_DAMAGE[kind]);
+  }
+
+  /**
+   * A blow from the player's weapon lands on a mob.
+   *
+   * The mob takes the damage; reaching zero health flips it to dead,
+   * starts its death linger and drops its share of loot right where it
+   * fell. The caller learns whether it was the killing blow.
+   */
+  damageMob(id: number, amount: number, world: SolidProbe | null = null): boolean {
+    const target = this.mobs.find((mob) => mob.id === id);
+    if (target === undefined || target.state === "dead") {
+      return false;
+    }
+    const health = Math.max(0, target.health - amount);
+    const next: MobState =
+      health <= 0
+        ? {
+            ...target,
+            health,
+            state: "dead",
+            deathTimer: DEATH_TIMER_MAX,
+            velocity: { x: 0, y: 0, z: 0 },
+          }
+        : { ...target, health };
+    this.mobs = this.mobs.map((mob) => (mob.id === id ? next : mob));
+    if (health <= 0) {
+      this.dropMobLoot(next, world);
+    }
+    return health <= 0;
+  }
+
+  /**
+   * The mobs the outside may look at, in id order.
+   *
+   * The renderer draws them from this and the netcode sends it; neither
+   * one sees anything it could turn into a state change.
+   */
+  mobViews(): readonly MobView[] {
+    return this.mobs.map((mob) => ({
+      id: mob.id,
+      kind: mob.kind,
+      state: mob.state,
+      position: { ...mob.position },
+      yaw: mob.yaw,
+      health: mob.health,
+    }));
+  }
+
+  /** How many mobs the world is holding right now. */
+  mobCount(): number {
+    return this.mobs.length;
   }
 
   /**
