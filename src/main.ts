@@ -298,6 +298,13 @@ export class Game {
     this.checkDeath();
 
     this.updateBreaking(dt);
+    // THE SWING LOOP: while a break hold is running the hand keeps
+    // striking, because "striking" is what breaking is. breakState is
+    // nulled by EVERY stop path - button released, look moved away, block
+    // broke - so one gate here covers them all. On the frame the block
+    // finally breaks, the swingHold flag is already false and
+    // updateBreaking's own swingViewmodel() plays one last full arc.
+    this.renderer.swingHold(this.breakState !== null);
     // T96: draw the items lying on the ground. Without this the player
     // walked over an INVISIBLE item - the mechanic worked and nothing was
     // ever on screen. The renderer diffs the list by id, so this is cheap
@@ -477,6 +484,10 @@ export class Game {
       return;
     }
     if (place) {
+      // The use/placement is not a silent teleport: the hand swings once.
+      // The break hold drives the LOOP (swingHold); this is the one-shot
+      // arc for the press.
+      this.renderer.swingViewmodel();
       this.placeBlock(hit);
       return;
     }
@@ -710,13 +721,30 @@ export class Game {
     } else {
       this.renderer.hideHighlight();
     }
-    // The hand holds the selected hotbar item. When the player selects a
-    // block, the hand shows that block's texture; when they select a tool
-    // there is no block texture for it yet, so the hand keeps the last
-    // block it had.
+    // The hand holds the selected hotbar item from all three angles: a
+    // block shows that block's cube; a TOOL shows the 3D tool model for
+    // its kind and tier (the old code let the previous block stay hanging
+    // in the air instead, which read as broken); nothing shows the bare
+    // fist. Exactly one holds per frame.
     const heldBlock = this.heldBlockId();
+    const heldSpec = this.heldTool();
     if (heldBlock !== null) {
       this.renderer.setHeldBlock(heldBlock);
+    } else if (heldSpec !== null) {
+      this.renderer.setHeldTool(heldSpec);
+    } else {
+      this.renderer.setHeldEmpty();
+    }
+
+    // The crack decal rides the break: while a hold is running the block
+    // under the crosshair shows cracks by progress stage, and the moment
+    // the hold stops - button released, look moved away, block broke -
+    // the bar hides AND the cracks hide with it.
+    const progress = this.breakProgress();
+    if (progress !== null && hit) {
+      this.renderer.showBreak(hit.x, hit.y, hit.z, progress);
+    } else {
+      this.renderer.hideBreak();
     }
 
     this.hud.update({
