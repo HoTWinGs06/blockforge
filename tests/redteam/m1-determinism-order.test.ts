@@ -20,12 +20,6 @@ describe("M1 DETERMINISM — same seed => identical output in any order", () => 
   });
 
   it("generation order does NOT affect result (forward vs reversed keys)", () => {
-    const seeds = [1, 2, 3];
-    const keys = [{ cx: 0, cz: 0 }, { cx: 1, cz: 0 }, { cx: 0, cz: 1 }];
-    // Forward
-    const fwd = keys.map((k) => generateChunk(7, k));
-    // Reversed
-    const rev = [...keys].reverse().map((k) => generateChunk(7, k));
     // Compare by matching key (reconstruct by key not needed: just compare the sequence of bytes in order of generation)
     // Real check: generating chunk (1,0) after (0,0) must not change (0,0)'s bytes.
     const a = generateChunk(7, { cx: 0, cz: 0 });

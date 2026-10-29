@@ -21,8 +21,8 @@ describe("M1 PURITY — src/core executable scan", () => {
   const files = tsFiles(CORE_DIR);
   it("control: files exist", () => expect(files.length).toBeGreaterThan(0));
   function executableLines(text: string): string[] {
-    let s = text.replace(/\/\*[\s\S]*?\*\//g, " ");
-    return s.split("\n").map((l) => l.split("//")[0]);
+    const s = text.replace(/\/\*[\s\S]*?\*\//g, " ");
+    return s.split("\n").map((l) => l.split("//")[0] ?? "");
   }
   const forbidden = [
     { name: "Math.random", regex: /Math\.random/ },
@@ -41,7 +41,7 @@ describe("M1 PURITY — src/core executable scan", () => {
       const lines = executableLines(raw);
       for (const f of forbidden) {
         const hits = lines.filter((l) => f.regex.test(l));
-        const safe = hits.filter((l) => /^\s*import\b.*from\s+["\']\.\/.*["\']/i.test(l) || /^\s*export\b/i.test(l));
+        const safe = hits.filter((l) => /^\s*import\b.*from\s+["']\.\/.*["']/i.test(l) || /^\s*export\b/i.test(l));
         const bad = hits.filter((l) => !safe.includes(l));
         expect(bad.length, `forbidden "${f.name}": ${bad.slice(0, 2)}`).toBe(0);
       }

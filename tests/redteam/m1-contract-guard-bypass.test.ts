@@ -5,11 +5,11 @@
  * have zero bypass paths.
  */
 import { describe, expect, it } from "vitest";
-import { blockIndex, chunkKeyFromString, chunkKeyToString, blockIdToByte, byteToBlockId, ALL_BLOCK_IDS, BlockId, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../../src/core/index.js";
+import { blockIndex, chunkKeyFromString, chunkKeyToString, blockIdToByte, byteToBlockId, ALL_BLOCK_IDS, type BlockId, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../../src/core/index.js";
 
 describe("M1 CONTRACT GUARDS — no bypass path", () => {
   it("blockIndex throws on every out-of-range coordinate", () => {
-    const bad = [
+    const bad: ReadonlyArray<readonly [number, number, number]> = [
       [-1, 0, 0], [16, 0, 0], [0, -1, 0], [0, 256, 0],
       [0, 0, -1], [0, 0, 16], [1.5, 1, 1], [1, 1, 1.999],
     ];
@@ -72,6 +72,6 @@ describe("M1 CONTRACT GUARDS — no bypass path", () => {
   it("no path can make chunkKeyFromString accept a non-string or non-canonical form", () => {
     // TypeScript prevents non-string at compile time; at runtime, any non-string
     // should either throw or not produce a valid ChunkKey.
-    expect(() => chunkKeyFromString(null as any)).toThrow();
+    expect(() => chunkKeyFromString(null as unknown as string)).toThrow();
   });
 });

@@ -2,7 +2,7 @@
  * RED-TEAM M1 — PATHOLOGICAL SEEDS
  */
 import { describe, expect, it } from "vitest";
-import { createRng, generateChunk, fbm2, valueNoise2, chunkIndex, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../../src/core/index.js";
+import { createRng, generateChunk, fbm2, valueNoise2, CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "../../src/core/index.js";
 
 describe("M1 PATHOLOGICAL SEEDS — must not crash / NaN / overflow", () => {
   const pathological = [0, 1, 2147483647, 4294967295, 9007199254740991, -1];
@@ -32,7 +32,7 @@ describe("M1 PATHOLOGICAL SEEDS — must not crash / NaN / overflow", () => {
       for (let i = 0; i < chunk.blocks.length; i++) {
         const v = chunk.blocks[i];
         expect(Number.isInteger(v)).toBe(true);
-        expect(v >= 0 && v <= 255).toBe(true); // byte-valid
+        expect(v !== undefined && v >= 0 && v <= 255).toBe(true); // byte-valid
       }
     });
   }
