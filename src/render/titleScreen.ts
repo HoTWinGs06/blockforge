@@ -50,8 +50,16 @@ const CSS = `
   cursor: pointer; font-family: inherit; font-weight: 700;
   transition: background .12s ease, transform .12s ease;
 }
-#blockforge-title .bf-play:hover {
+#blockforge-title .bf-play:hover,
+#blockforge-title .bf-join:hover {
   background: rgba(240,245,255,.2); transform: translateY(-1px);
+}
+#blockforge-title .bf-join {
+  margin-top: 10px; display: inline-block;
+  padding: 8px 28px; font-size: 13px; letter-spacing: 2px;
+  border: 1px solid rgba(240,245,255,.55); border-radius: 3px;
+  background: rgba(240,245,255,.08); color: #f6f7fb;
+  cursor: pointer; font-family: inherit; font-weight: 600;
 }
 #blockforge-title .bf-controls {
   margin-top: 30px; font-size: 12px; line-height: 1.9; opacity: .62;
@@ -66,9 +74,15 @@ const CSS = `
 export class TitleScreen {
   readonly root: HTMLDivElement;
   private readonly playButton: HTMLButtonElement | null;
+  private readonly joinButton: HTMLButtonElement | null;
   private hidden = false;
+  private readonly onJoin: ((url: string) => void) | undefined;
 
-  constructor(parent: HTMLElement = document.body) {
+  constructor(
+    parent: HTMLElement = document.body,
+    onJoin?: (url: string) => void,
+  ) {
+    this.onJoin = onJoin;
     if (!document.getElementById(STYLE_ID)) {
       const style = document.createElement("style");
       style.id = STYLE_ID;
@@ -83,6 +97,7 @@ export class TitleScreen {
         <h1>BLOCKFORGE</h1>
         <div class="bf-tagline">an original, unofficial Minecraft-inspired voxel sandbox</div>
         <button class="bf-play" type="button">CLICK TO PLAY</button>
+        <button class="bf-join" type="button">JOIN SERVER</button>
         <div class="bf-controls">
           <b>WASD</b> move &nbsp;&middot;&nbsp; <b>Space</b> jump &nbsp;&middot;&nbsp;
           <b>Shift</b> run &nbsp;&middot;&nbsp; <b>Mouse</b> look<br />
@@ -101,6 +116,12 @@ export class TitleScreen {
     if (this.playButton) {
       this.playButton.addEventListener("click", () => {
         this.hide();
+      });
+    }
+    this.joinButton = this.root.querySelector<HTMLButtonElement>(".bf-join");
+    if (this.joinButton) {
+      this.joinButton.addEventListener("click", () => {
+        this.onJoin?.("ws://127.0.0.1:7070");
       });
     }
 

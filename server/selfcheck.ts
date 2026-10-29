@@ -32,7 +32,8 @@ import { createServer } from "./server.js";
 import { createWorld, worldFromSaveText, worldToSaveText } from "./world.js";
 import { ATTACKS } from "./attacks.js";
 import { MESSAGE_TYPES, encodeEnvelope } from "../src/net/protocol.js";
-import { BlockId } from "../src/core/types.js";
+import { BlockId, type BlockEditPayload } from "../src/core/types.js";
+import { NetClient } from "../src/net/client.js";
 
 let failures = 0;
 let checks = 0;
@@ -261,6 +262,42 @@ async function main(): Promise<void> {
     !wrongVersion.ok && wrongVersion.reason === "save_schema_mismatch",
     wrongVersion.ok ? "the wrong-version save was accepted" : wrongVersion.reason,
   );
+
+  // ── join proof: wire the T39 client slice (join -> edit -> sync back) ──
+  (globalThis as unknown as { WebSocket?: typeof WebSocket }).WebSocket = WebSocket;
+  let appliedEdit: BlockEditPayload | null = null;
+  const joinClient = new NetClient({
+    url,
+    events: {
+      onWelcome: () => { joinClient.requestChunks(0, 0, 1); },
+      onChunk: () => {},
+      onBlockApplied: (e) => { appliedEdit = e as BlockEditPayload; },
+      onError: () => {},
+      onClose: () => {},
+    },
+  });
+  await new Promise<void>((res) => {
+    const iv = setInterval(() => {
+      if (joinClient.isOpen) { clearInterval(iv); res(); }
+    }, 20);
+  });
+  joinClient.requestEdit({ cx: 0, cz: 0, x: 3, y: 70, z: 4, block: BlockId.Timber });
+  const joinStart = Date.now();
+  while (!appliedEdit && Date.now() - joinStart < 3000) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  check(
+    "join flow: client receives block_applied after edit",
+    appliedEdit !== null && (appliedEdit as BlockEditPayload).block === BlockId.Timber,
+    appliedEdit === null ? "no block_applied" : `got block=${(appliedEdit as BlockEditPayload).block}`,
+  );
+  const afterJoin = world.getBlockAt(3, 70, 4);
+  check(
+    "join flow: server world reflects the client edit",
+    afterJoin === BlockId.Timber,
+    `world holds ${String(afterJoin)} at 3,70,4`,
+  );
+  joinClient.close();
 
   alive.close();
   listener.close();
