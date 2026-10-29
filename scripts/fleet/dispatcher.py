@@ -502,7 +502,32 @@ def _reap_locked() -> None:
         if rc == 0:
             sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                                  capture_output=True, text=True, timeout=60).stdout.strip()
-            log(f"REAPED {branch} into {INTEGRATED_BRANCH} (tasks {ids}) -> {sha}")
+            # T112 belt-and-suspenders: verify the LANDED tree is green. The
+            # pre-merge gate protects merges, not bypasses - a stale pre-gate
+            # dispatcher copy (workspace/fleet-dispatcher.py) was reaping via
+            # cron with no gate at all. If the landed tree is red for any
+            # reason, roll the merge back and block the tasks.
+            pre_sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD^"],
+                                     capture_output=True, text=True, timeout=60).stdout.strip()
+            post_fail: list[str] = []
+            genv = _gate_env()
+            for label, cmd in (("typecheck", ["npm", "run", "typecheck"]),
+                               ("lint", ["npm", "run", "lint"])):
+                rr, out2, err2 = run(cmd, cwd=REPO, timeout=900, env=genv)
+                if rr != 0:
+                    post_fail.append(f"{label} failed on the landed tree:\n" + (out2 or err2).strip())
+                    break
+            if post_fail:
+                run(["git", "-C", str(REPO), "reset", "--hard", pre_sha], timeout=60)
+                snippet = "\n".join(post_fail[-1].strip().splitlines()[:14])[:1200]
+                for t_ in done_tasks:
+                    board_cmd("update", t_["id"], "--status", "blocked", "--notes",
+                              f"POST-MERGE GATE {role}: the landed tree was red; merge ROLLED "
+                              f"BACK to {pre_sha[:10]}\n{snippet}")
+                log(f"REAP ROLLBACK {branch} (tasks {ids}) - landed tree red, "
+                    f"reverted {sha} -> {pre_sha[:10]}")
+            else:
+                log(f"REAPED {branch} into {INTEGRATED_BRANCH} (tasks {ids}) -> {sha}")
         else:
             run(["git", "-C", str(REPO), "merge", "--abort"], timeout=60)
             log(f"REAP CONFLICT on {branch} (tasks {ids}) - left for a human: {(err or out)[:160]}")
