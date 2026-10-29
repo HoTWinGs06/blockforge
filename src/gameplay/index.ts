@@ -62,3 +62,11 @@ export {
   SETTLE_TICKS,
 } from "./itemEntities.js";
 export type { CollectResult, ItemEntity, SolidProbe } from "./itemEntities.js";
+export {
+  stockOf,
+  recipeBook,
+  preview,
+  craft,
+  gridSize,
+} from "./crafting.js";
+export type { CraftOutcome, StockEntry } from "./crafting.js";

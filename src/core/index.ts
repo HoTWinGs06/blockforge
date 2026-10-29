@@ -19,3 +19,4 @@ export * from "./world.js";
 export * from "./meshing.js";
 export * from "./physics.js";
 export * from "./raycast.js";
+export * from "./crafting/index.js";

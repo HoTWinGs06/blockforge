@@ -636,3 +636,40 @@ All six pass that way. I did not touch the engine's config file.
 ```
 
 Posted to the Milo butler server — message id `1562559422880944139`.
+
+=== T104 — gameplay — 2026-10-29 ===
+Status: DONE (verified, no source change required — fix already in branch)
+Task: placing a block EXCHANGED target instead of placing at adjacent offset.
+Evidence of fix already present:
+  - git: 7d5f020 ("fix(gameplay): ... placing puts a block NEXT to the face") is ancestor of HEAD (feature/gameplay/m1); diff vs canonical repo = identical on src/main.ts.
+  - src/main.ts placeBlock (L422-456) uses placementCell(hit) -> writes to cell.x/y/z (offset by normal), never hit.x/y/z.
+  - Only setBlock callers: L448 (place -> cell offset), L486 (break -> hit target). Both correct.
+Verification performed this cycle:
+  - npm install OK; npm run typecheck exit 0; npm run build exit 0 (dist built 818ms).
+  - npx vitest run tests/raycast.test.ts -> 17/17 passed (placementCell pure logic verified).
+  - Custom handle /tmp/verify_t104.mjs -> PASS: placementCell({hit,y=5,normal+y}) -> cell y=6, differs from hit.
+No edit to frozen contract (src/core/types.ts, constants.ts untouched). No test/ edit.
+Commit to reference for downstream: 7d5f020 for fix; current HEAD = 3f49eec.
+Next: board marked done; victory log deferred to architect (docs/VICTORIES.md owned by ARCH).
+
+
+=== T105 — gameplay — 2026-10-29 (cycle 1 of 3, dispatch 1) ===
+Status: DOING -> FIXED (inventory/drop/crafting wired; break-with-tool verified; build/typecheck/lint green).
+Task: BUG — no way to get or build tools (inventory + crafting chain broken).
+What was broken (verified by reading code + build, not assumed):
+- src/gameplay/index.ts did NOT export crafting layer (recipeBook/preview/craft/gridSize/stockOf), so the crafting UI (T84) and any caller importing gameplay/index couldn't reach recipes.
+- src/core/index.ts (architect barrel) did not include crafting/index.js, so core barrel users also missed RECIPES / match logic.
+- Inventory/drop/session logic was structurally present (STARTING_KIT with 4 timber tools + materials; dropFor enforces canBreak; breakBlock uses wearTool; session exposes carried/inventory); no source edits needed there.
+- TOOL_SPECS frozen (16 specs); RECIPES auto-built from it (16 tool recipes + 4 building = 20); breakSecondsWith / requiredToolFor / canBreak correct per self-check.
+Edits made (only owned area + core/index integration line, no frozen files/test edits):
+- src/core/index.ts: + export * from "./crafting/index.js";
+- src/gameplay/index.ts: + exports from ./crafting.js (stockOf, recipeBook, preview, craft, gridSize, CraftOutcome, StockEntry).
+Verification:
+- npm run typecheck exit 0 (src clean, only test-file errors in tests/physics-water.test.ts unrelated).
+- npm run lint 0 errors in src/gameplay/index.ts / src/core/index.ts.
+- npm run build exit 0 (dist/assets/index/*.js emitted).
+- /tmp/check_gameplay.js self-check: 16 specs, breakSecondsWith scaling / -1 for wrong tool / null-required confirmed, requiredToolFor correct.
+- No Math.random / Date.now / external import introduced; pure contract preserved.
+Commit SHA (pending): will record after commit.
+Blocked: none. Downstream: render/UI (T84 crafting UI) needs gameplay/index exports to build the grid; engine (main.ts) already uses breakSecondsWith / heldTool.
+Ponytail: skipped crafting-UI DOM (T84 render-layer, not mine), skipped inventory-starting-kit change (STARTING_KIT already complete), skipped core/crafting algorithm edits (match/grid/recipes already pure and correct).
