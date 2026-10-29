@@ -22,16 +22,44 @@ import type { Page } from "@playwright/test";
  * happen is both faster and more honest than a sleep.
  */
 test.describe("T80 guard: broken blocks become collectable items", () => {
-  /** Start the game, get the title screen out of the way, wait for landing. */
+  /**
+   * Start the game: press play until the title screen ITSELF confirms it
+   * is out of the way, then wait for the landing.
+   *
+   * WHY THE LANDING ALONE IS NOT PROOF: gravity runs behind the title
+   * screen - step() only gates look and move - so the spawn falls and
+   * lands whether or not play was ever pressed. One click is not a
+   * guarantee either: cold start (the first test of a full run) can lose
+   * it. So keep clicking until the title's own hidden class says it has
+   * gone, and fail THERE if it never does - not minutes later in a world
+   * that cannot act.
+   */
   const play = async (page: Page): Promise<void> => {
     await page.goto("/");
     await page.waitForSelector("#blockforge-hud", { timeout: 30_000 });
     await page.waitForTimeout(1500);
-    const button = page.locator("#blockforge-title .bf-play");
-    if (await button.count()) {
-      await button.click();
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const gone = await page.evaluate(
+        () =>
+          document.querySelector("#blockforge-title")?.classList.contains("bf-hidden") ?? false,
+      );
+      if (gone) {
+        break;
+      }
+      const button = page.locator("#blockforge-title .bf-play");
+      if (await button.count()) {
+        await button.click().catch(() => undefined);
+      }
       await page.waitForTimeout(600);
     }
+
+    const started = await page.evaluate(
+      () =>
+        document.querySelector("#blockforge-title")?.classList.contains("bf-hidden") ?? false,
+    );
+    expect(started, "the title screen must hide once play is pressed").toBe(true);
+
     // The player SPAWNS IN THE AIR and falls. Aiming at the ground before
     // they land aims at nothing, so wait for the landing.
     await page.waitForFunction(
@@ -43,7 +71,8 @@ test.describe("T80 guard: broken blocks become collectable items", () => {
         ).__blockforge;
         return handle?.state().onGround === true;
       },
-      { timeout: 30_000 },
+      undefined,
+      { timeout: 60_000 },
     );
   };
 
