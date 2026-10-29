@@ -27,7 +27,6 @@ import {
   moveWithCollisions,
   stepJumpAssist,
   stepPhysics,
-  swimVelocity,
   type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
