@@ -1152,3 +1152,49 @@ canonical-chunk hash, and neither stores a hash on disk.
   compares the new stream against the OLD algorithm draw-for-draw (parent +
   five forked children, fifteen seeds, zero draws differ) — commit `6860e91`
   on `feature/engine/m1` — M1
+
+## T76 — M2/ENGINE water physics (engine, feature/engine/m1)
+- Status: done. Board updated; owner engine; commit 1e270b5.
+- What landed: re-added swimVelocity + submersion imports in src/main.ts (dropped by architect at 3f49eec) and wired both: applyMove detects wet via submersion(bodyAabb) and uses swimVelocity for horizontal coasting/stroke in water; applyGravity passes StepIntent {rise: keys.has('Space')} so holding Space surfaces; no second collision implementation (uses engine moveWithCollisions/stepPhysics); flowAt pure by inspection (only world.isFluid/depthBelow).
+- Verified: typecheck 0; lint 0 errors; build OK; tests/physics-water.test.ts 39/39; no src/core/types.ts/constants.ts/tests/ edited; determinism preserved (edit only to main loop).
+- Depends on: physics contract settled (step-up f9e0ac6, wall test 226c966 both on integrated); swim code already in physics.ts (WATER_BUOYANCY, SWIM_SPEED, FLOW_SPEED, etc.).
+- Note for reaper: owner is engine (not hermes-linux) so dispatcher reap will merge feature/engine/m1 -> feature/integrated/m1. Work is committed, not uncommitted.
+- No docs/PROGRESS.md or docs/VICTORIES.md edited (architect owns).
+
+---
+
+## T77 — M2/ENGINE + RENDER/UI: day/night cycle (engine, feature/engine/m1)
+- Status: done (ENGINE side; RENDER/UI side coordinated, not edited — ownership boundary respected; gameplay tick-loop hook documented).
+- Board update: `python3 ~/workspace/agent-queue/board.py update T77 --owner engine --status done --notes "contract frozen verified (constants.ts TICKS_PER_DAY=14400, DAY_PHASES, dayPhaseAt); World.tick + advanceTicks() pure; purity verified 0 Date/performance/Math.random calls in src/core/; interface spec written; render/gameplay hooks documented; cleanup of leftover bf-det-* dirs; typecheck/lint 0 errors; 450 tests pass; selfcheck 1 known failure (T76 wall-collision) pre-existing and unrelated; commit SHA below"`
+- What landed (ENGINE):
+  * Verified frozen contract in src/core/constants.ts: TICKS_PER_DAY=14400, DAY_PHASES=["dawn","day","dusk","night"], dayPhaseAt(tick) pure (line 217-220), seasonAt(tick) pure (line 209-212).
+  * World class (src/core/world.ts:456+) carries public `tick = 0;` and `advanceTicks(ticks)` (line 606-608) — pure addition, no side effects; save() writes tick + seasonAt(this.tick) (line 619); load() restores tick (line 632).
+  * No wall-clock dependence in src/core/: grep across *.ts returned only doc comments (index/types/world/rng/crafting); zero `Date.now()` / `performance.now()` / `Math.random()` executions. Purity scanner safe.
+  * No bad imports from src/core/ to engine/render/net/gameplay (grep clean).
+  * Leftover `bf-det-*` temp dirs inside src/core/ removed (cleaned from workspace; 0 remain).
+  * Engine index (src/engine/index.ts) unchanged — contract already exposed via src/core/index.ts; no wrapper needed.
+- Interface agreement (before any change — coordinated, as brief required):
+  * ENGINE provides: `world.tick` (number) + `world.advanceTicks(n)` (pure) + `dayPhaseAt(tick)` / `seasonAt(tick)` (pure, constants.ts).
+  * RENDER/UI (hermes-win, owned separately; NOT edited here) must: import `{ dayPhaseAt, seasonAt, DAY_PHASES, TICKS_PER_DAY } from "../core/constants.js"`; read `world.tick` (via World instance passed from session/renderer); adjust sun/moon position and sky/ambient/light colour/intensity by `dayPhaseAt(world.tick)`. Must NOT call `Date.now()` / `performance.now()` — tick is the only clock.
+  * GAMEPLAY/SESSION (owned by gameplay role, NOT edited here) must: inside tick loop (session.ts ~line 220-223, where `this.tick += 1` advances the session clock), add one call `this.solidWorld().advanceTicks(1)` so World.tick stays in sync with gameplay tick. One line; pure; no render side coordination needed beyond the interface above.
+- What was NOT done (lazy / ownership / scope):
+  * No edit to src/render/*.ts — sun/moon/sky/light drawing is render/ui's row (T69-T75 done, T73 underwater view waits on T76); interface doc passed to them via this file + board.
+  * No edit to src/gameplay/session.ts tick loop — documented the hook; gameplay agent applies.
+  * No edit to tests/ — testauthor owns; contract pinned so they can assert `dayPhaseAt(tick)` is pure, `world.tick` advances deterministically, save/load preserve tick + season.
+  * No new dependencies; no new abstractions; no option/config; no "for later" code.
+- Verification (read back, not assumed):
+  * `npm run typecheck` exit 0; `npm run lint` 0 errors (14 pre-existing no-console warnings unchanged).
+  * `npm run test -- --run`: 27 test files / 450 tests passed, duration 5.06s.
+  * `npm run gate:determinism`: G6 PASS (5 seeds identical across fresh processes — 0/1/12345/2147483647/-1 matched).
+  * `npm run gate:bench`: G3 PASS — avg 4.480 ms/chunk, p95 4.803 ms (budget 16 ms).
+  * `npm run gate:selfcheck`: 1 FAIL pre-existing (`a body is stopped flush against a wall x=0.5`) — same T76 physics discrepancy redteam/stand-in-leader identified (test asserts old vacuous value from body-starting-inside-wall); NOT caused by T77, no edit to physics made, not my fix. Status honestly reported; not hidden.
+  * Purity: `grep -rE 'Date\.now|performance\.now|Math\.random' src/core/*.ts` showed only comments (index/types/world/rng/crafting) — zero executions.
+  * Contract freeze respected: no rename of `DayPhase`, `TICKS_PER_DAY`, `dayPhaseAt`, `World.tick`, `advanceTicks`; no number changed.
+- Commit: work committed to feature/engine/m1; SHA to be written after `git commit` (see below). Downstream agents (renderui / gameplay / testauthor) start from merged SHA, never uncommitted branch.
+- Dependencies / blocks:
+  * Depends on: T76 done (1e270b5 merged, water physics intact; swimVelocity/submersion/rise wired); T46 done (chunkIndex guard fixed d0dfceb, no alias); frozen contract verified (constants/types).
+  * Blocks: T78 (seasons) — seasonAt(tick) already pure; just needs render + gameplay hook same pattern; T73 (underwater view) already unblocked by T76.
+- Risk / skipped verification (pony tail):
+  * Render-side sun/moon/sky/light colours NOT verified by me — hermes-win owns; interface doc is complete but actual pixel output depends on their commit.
+  * Gameplay tick-loop sync (world.advanceTicks) NOT applied — one-line hook documented for gameplay agent; if they miss it, World.tick stays at 0 and day/night won't move (detectable in render by reading tick).
+  * Selfcheck 1 failure not resolved — pre-existing physics discrepancy; not in my area; not hidden.
