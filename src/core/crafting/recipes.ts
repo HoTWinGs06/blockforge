@@ -141,9 +141,11 @@ const BUILDING_RECIPES: readonly Recipe[] = Object.freeze([
   {
     id: "smeltforge",
     kind: "shaped",
+    // One ingredient per consumed item, matching the trimmed shape: the
+    // hole in the middle is not an ingredient, so the ring is 8 rock.
     ingredients: Object.freeze([
       "#rock", "#rock", "#rock",
-      "#rock", "", "#rock",
+      "#rock", "#rock",
       "#rock", "#rock", "#rock",
     ]),
     shape: Object.freeze([

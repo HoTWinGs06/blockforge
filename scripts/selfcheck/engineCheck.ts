@@ -128,8 +128,18 @@ const world = {
 {
   let position = { x: 0.5, y: 1, z: 0.5 };
   let velocity = { x: 4, y: 0, z: 0 };
+  // The game loop owns horizontal motion through moveWithCollisions (the
+  // X and Z axis moves in main.ts) and leaves gravity to stepPhysics, so
+  // the self-check follows that same split: one horizontal probe per
+  // 60 Hz tick. Calling stepPhysics here would check a function that no
+  // longer carries horizontal velocity at all.
   for (let i = 0; i < 60; i++) {
-    const step = stepPhysics(position, velocity, 1 / 60, world);
+    const step = moveWithCollisions(
+      position,
+      velocity,
+      { x: velocity.x / 60, y: 0, z: 0 },
+      world,
+    );
     position = step.position;
     velocity = step.velocity;
   }

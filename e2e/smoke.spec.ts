@@ -109,17 +109,23 @@ test.describe("G2: headless smoke test", () => {
 
     await page.keyboard.press("KeyF");
     await page.waitForTimeout(300);
-    await page.keyboard.press("KeyR");
-    await page.waitForTimeout(300);
-
-    const after = await page.evaluate(
+    const afterBreak = await page.evaluate(
       () => document.querySelector(".bf-target")?.textContent ?? "",
     );
 
-    // The assertion is that the loop is wired and does not throw. The real
-    // gate is the console stream, asserted separately.
+    await page.keyboard.press("KeyR");
+    await page.waitForTimeout(300);
+    const afterPlace = await page.evaluate(
+      () => document.querySelector(".bf-target")?.textContent ?? "",
+    );
+
+    // The interaction must change the world state: breaking changes what the
+    // raycast hits, and re-placing restores it. A test that passes when both
+    // keypresses are removed cannot defend the core interaction.
     expect(typeof before).toBe("string");
-    expect(typeof after).toBe("string");
+    expect(before.length).toBeGreaterThan(0);
+    expect(afterBreak).not.toBe(before); // world changed after break
+    expect(afterPlace).toBe(before);      // world restored after re-place
   });
 
   test("keeps the console clean across the whole run", () => {

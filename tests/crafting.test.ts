@@ -508,6 +508,19 @@ describe("T95: crafting - the recipe table", () => {
     );
   });
 
+  it("keeps a shaped recipe's ingredient list consistent with its shape", () => {
+    // `ingredients` is "one per item the recipe consumes". A shaped
+    // recipe consumes exactly the non-hole cells of its shape, so an
+    // empty string in the list is a phantom ingredient, and a count that
+    // disagrees with the shape is a data bug (the smeltforge once listed
+    // nine, hole included).
+    for (const recipe of RECIPES) {
+      if (recipe.kind !== "shaped" || recipe.shape === undefined) continue;
+      const consumed = recipe.shape.flat().filter((token) => token !== "");
+      expect(recipe.ingredients).toEqual(consumed);
+    }
+  });
+
   it("lays every recipe out on a 3x3 pattern for the recipe book", () => {
     const shaped = recipePattern(recipeById("masonry") ?? synthetic("x", []));
     expect(shaped).toHaveLength(3);
