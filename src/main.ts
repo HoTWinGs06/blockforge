@@ -1056,7 +1056,7 @@ export interface GameHandle {
   state(): PlayerState;
   /** Where the player is looking, in radians. */
   view(): { yaw: number; pitch: number };
-  /** Look down (positive) or up (negative) by a number of radians. */
+  /** Look down (negative) or up (positive) by a number of radians. */
   look(pitchDelta: number, yawDelta?: number): void;
   /** The block the player is currently aiming at, if any. */
   targeted(): { x: number; y: number; z: number } | null;
