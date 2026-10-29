@@ -94,6 +94,11 @@ export const SAFE_FALL_BLOCKS = 3;
  */
 export const FOOD: Readonly<Record<string, number>> = Object.freeze({
   wildfig: 3,
+  grazermeat: 4,
+  fluttermeat: 3,
+  shellmeat: 2,
+  lurkmeat: 3,
+  snarlermeat: 4,
 });
 
 /**

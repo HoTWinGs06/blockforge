@@ -70,3 +70,14 @@ export {
   gridSize,
 } from "./crafting.js";
 export type { CraftOutcome, StockEntry } from "./crafting.js";
+export {
+  spawnMob,
+  updateMobAI,
+  mobDropTable,
+  MOB_DROP_ITEM,
+  MOB_MAX_HEALTH,
+  MOB_SPEED,
+  AI_TIMER_DEFAULT,
+  DEATH_TIMER_MAX,
+} from "./mobs.js";
+export type { MobWorldView } from "./mobs.js";
