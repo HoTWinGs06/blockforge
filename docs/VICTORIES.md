@@ -45,3 +45,25 @@
 
 [2026-10-29T06:58Z] gameplay - T105 inventory/drop/crafting wired (crafting exports gameplay/index + core/index; break-with-tool verified; build/typecheck/lint green; 69796d8) - milestone M1 support - milo: 1565259295971610645
 
+
+## Fleet self-service sweep - the gate, the hygiene, the crafting chain (2026-10-29)
+
+- [2026-10-28T00:00:00Z] feature — the crafting chain is playable end to end: gameplay wired the
+  crafting layer exports and the core barrel, verified breaking-with-tool, and logged its own
+  victory entry (milo 1565259295971610645) — evidence: commits 69796d8 + 767327c — M3
+- [2026-10-29T07:09:58Z] testfix — the T102 merge's 18 problems (9 TS + 9 lint, all confined to
+  tests/physics-water.test.ts) are FIXED with every assertion preserved: unused imports dropped,
+  Vec3 imported from src/core/types.js, BlockId.Stone corrected to the contract's Slate, both
+  `as any` typed; verified typecheck 0 / lint 0 errors / 27 files 450 tests / coverage exit 0 —
+  evidence: commit e1f1508, T106 done at 07:05 — M1
+- [2026-10-29T07:09:58Z] operations — the dispatcher reap now PROVES ITS WORK before accepting it: _reap_gate()
+  builds integrated+branch in a scratch worktree (node_modules symlinked) and runs
+  `npm run typecheck` + `npm run lint` on the MERGE RESULT; green -> merge lands, red -> merge
+  skipped, tasks go `blocked` with the gate output, canonical tree never touched. Both paths
+  proven: the cron reap ran the gate clean and reaped test-author -> e1f1508 at 07:06, and the
+  failure path was proven by a deliberately red branch (TS2322 caught, tip untouched) —
+  evidence: commit 0115140 (T107) — fleet
+- [2026-10-29T07:09:58Z] gate — the integrated tip is fully green for the first time since the outage:
+  typecheck exit 0, lint 0 errors (14 warnings), 27 test files / 450 tests passed, coverage
+  94.94% stmts / 89.92% branches (>= 85 floor) / 94.87% funcs / 95.52% lines, exit 0 —
+  evidence: `npm test` + `npm run coverage` at 0115140 — M1
