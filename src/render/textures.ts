@@ -99,18 +99,26 @@ function drawTile(ctx: CanvasRenderingContext2D, ox: number, oy: number, id: Blo
   // A stable seed per block kind keeps each kind's grain consistent.
   const seed = id.length * 7919;
 
-  // Grain speckle.
+  // Grain speckle - two octaves so the surface reads as textured stone/earth
+  // rather than a flat colour wash.
   for (let y = 0; y < TILE_PX; y++) {
     for (let x = 0; x < TILE_PX; x++) {
       const n = hash2(x, y, seed);
-      if (n > 0.86) {
+      const n2 = hash2(x * 3 + 7, y * 5 + 11, seed + 97);
+      if (n > 0.88) {
         ctx.fillStyle = pal.light;
         ctx.fillRect(ox + x, oy + y, 1, 1);
-      } else if (n < 0.14) {
+      } else if (n < 0.12) {
         ctx.fillStyle = pal.dark;
         ctx.fillRect(ox + x, oy + y, 1, 1);
-      } else if (n > 0.74) {
+      } else if (n > 0.72) {
         ctx.fillStyle = pal.speck;
+        ctx.fillRect(ox + x, oy + y, 1, 1);
+      } else if (n2 > 0.94) {
+        ctx.fillStyle = pal.light;
+        ctx.fillRect(ox + x, oy + y, 1, 1);
+      } else if (n2 < 0.06) {
+        ctx.fillStyle = pal.dark;
         ctx.fillRect(ox + x, oy + y, 1, 1);
       }
     }
@@ -171,11 +179,16 @@ function drawTile(ctx: CanvasRenderingContext2D, ox: number, oy: number, id: Blo
     }
   }
 
-  // A subtle top-light / bottom-shade so blocks read as lit volumes.
-  ctx.fillStyle = "rgba(255,255,255,0.06)";
-  ctx.fillRect(ox, oy, TILE_PX, 1);
-  ctx.fillStyle = "rgba(0,0,0,0.10)";
-  ctx.fillRect(ox, oy + TILE_PX - 1, TILE_PX, 1);
+  // Stronger top-light / bottom-shade so blocks read as lit volumes.
+  ctx.fillStyle = "rgba(255,255,255,0.14)";
+  ctx.fillRect(ox, oy, TILE_PX, 2);
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  ctx.fillRect(ox, oy + TILE_PX - 2, TILE_PX, 2);
+  // Subtle side bevel for depth.
+  ctx.fillStyle = "rgba(255,255,255,0.07)";
+  ctx.fillRect(ox, oy, 1, TILE_PX);
+  ctx.fillStyle = "rgba(0,0,0,0.12)";
+  ctx.fillRect(ox + TILE_PX - 1, oy, 1, TILE_PX);
 }
 
 /** Slot index in the atlas for a block kind. */
