@@ -67,3 +67,10 @@
   typecheck exit 0, lint 0 errors (14 warnings), 27 test files / 450 tests passed, coverage
   94.94% stmts / 89.92% branches (>= 85 floor) / 94.87% funcs / 95.52% lines, exit 0 —
   evidence: `npm test` + `npm run coverage` at 0115140 — M1
+
+### 2026-10-29 — Fleet driving again: T76 + T54 closed, all seven lanes stocked
+- T76 (M2/ENGINE water physics) is DONE and reaped through the T107 gate: swimVelocity + submersion + rise intent wired into src/main.ts (`1e270b5`). The task survived the outage-era model-404 reruns (attempt counter reset consciously, dispatchers' judgement call later ratified).
+- T54 (M1/RELEASE) is DONE: main merged at `e2f5834`, and the G2 console gate was confirmed **genuinely** green — release's own CONTEXT_LOST_WEBGL concern (from its driven run) was disproven by running the real Playwright gate (4 passed), not by widening the filter.
+- Board hygiene: stale-done rows closed (T71 hand+walk, T74 clouds, T75 synth music → done; T56 integration-ratification → dropped, answered by history). T72/T73 carry leader notes holding their render halves until T76's reaped state.
+- Lane offers placed one per lane (one-by-one rule): T84 → renderui (crafting UI unparked, data side done at afbebb0), T30 → redteam (cycle 2 unparked — attack water/swim, crafting, survival, server validation), T77 → engine (day/night), T109 → testauthor (pin server/validation.ts anti-cheat rules in vitest — closes the tests-cover-server gap found by recon), T110 → netcode (the game joins a served world — wires the T39 client slice; PROTOCOL_VERSION stays 1), T111 → release (public repo HoTWinGs06/blockforge, the one T54 leftover).
+- Dispatcher verified filling: engine T77 + netcode T110 RUNNING (0/2 → 2/2 within one cron cycle), four further tasks queued.

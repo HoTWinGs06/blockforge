@@ -13,6 +13,8 @@
 import {
   ALL_BLOCK_IDS,
   BlockId,
+  byteToBlockId,
+  isValidBlockByte,
   type ChunkKey,
   type PlayerState,
   type ToolSpec,
@@ -27,6 +29,8 @@ import {
   moveWithCollisions,
   stepJumpAssist,
   stepPhysics,
+  submersion,
+  swimVelocity,
   type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
@@ -34,6 +38,7 @@ import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
 import { GameplaySession } from "./gameplay/index.js";
 import type { Activity } from "./gameplay/index.js";
 import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
+import { NetClient } from "./net/index.js";
 
 /**
  * The shape the render layer needs from the engine.
@@ -148,13 +153,14 @@ export class Game {
   private readonly lookDelta = { x: 0, y: 0 };
   private dragging = false;
   private running = false;
+  private net: NetClient | undefined;
 
   constructor(canvas: HTMLCanvasElement, engine: EngineBridge) {
     this.engine = engine;
     this.renderer = new WorldRenderer(canvas);
     this.hud = new Hud();
     this.sound = new SoundBoard();
-    this.title = new TitleScreen();
+    this.title = new TitleScreen(document.body, (url) => this.join(url));
     this.bindInput(canvas);
 
     // The title screen's "click to play" is what captures the pointer. The
@@ -182,6 +188,50 @@ export class Game {
       health: this.session.health,
       hunger: this.session.hunger,
     };
+  }
+
+  /** Join a served world via the T39 client slice. */
+  join(url: string): void {
+    if (this.net) return;
+    this.net = new NetClient({
+      url,
+      events: {
+        onWelcome: () => {
+          const ck = chunkKeyOf(this.position.x, this.position.y, this.position.z);
+          this.net?.requestChunks(ck.cx, ck.cz, 1);
+        },
+        onChunk: (payload) => {
+          const cx = payload.cx ?? 0;
+          const cz = payload.cz ?? 0;
+          const blocks = payload.blocks;
+          if (!blocks || !(blocks instanceof Uint8Array) || blocks.length === 0) return;
+          const arr = blocks instanceof Uint8Array ? blocks : new Uint8Array(blocks);
+          for (let i = 0; i < arr.length; i++) {
+            const b = arr[i];
+            if (typeof b !== "number") continue;
+            if (!isValidBlockByte(b)) continue;
+            const x = i % 16;
+            const z = Math.floor(i / 16) % 16;
+            const y = Math.floor(i / (16 * 16)) % 256;
+            const kind = byteToBlockId(b);
+            if (!kind) continue;
+            this.engine.setBlock(cx * 16 + x, y, cz * 16 + z, kind);
+          }
+        },
+        onBlockApplied: (edit) => {
+          this.engine.setBlock(
+            (edit.cx ?? 0) * 16 + (edit.x ?? 0),
+            edit.y ?? 0,
+            (edit.cz ?? 0) * 16 + (edit.z ?? 0),
+            edit.block,
+          );
+        },
+        onError: () => {},
+        onClose: () => {
+          this.net = undefined;
+        },
+      },
+    });
   }
 
   /** Start the render loop. */
@@ -274,12 +324,56 @@ export class Game {
     if (this.keys.has("KeyA")) strafe -= 1;
 
     const len = Math.hypot(forward, strafe);
+    const world = this.solidWorld();
+    const wet = submersion(bodyAabb(this.position), world);
+
+    let wishX = 0;
+    let wishZ = 0;
+    if (len > 0) {
+      forward /= len;
+      strafe /= len;
+      const sin = Math.sin(this.yaw);
+      const cos = Math.cos(this.yaw);
+      const speed = this.keys.has("ShiftLeft") ? WALK_SPEED * SPRINT_MULTIPLIER : WALK_SPEED;
+      wishX = (-sin * forward + cos * strafe) * speed;
+      wishZ = (-cos * forward - sin * strafe) * speed;
+    }
+
+    if (wet > 0) {
+      // In water: coasting + stroke via the pure swim function.
+      const swimRes = swimVelocity(
+        this.position,
+        { x: this.velocity.x, y: 0, z: this.velocity.z },
+        wishX,
+        wishZ,
+        dt,
+        world,
+      );
+      const vx = swimRes.x;
+      const vz = swimRes.z;
+      const xResult = moveWithCollisions(
+        this.position,
+        this.velocity,
+        { x: vx * dt, y: 0, z: 0 },
+        world,
+      );
+      this.position = xResult.position;
+      const zResult = moveWithCollisions(
+        this.position,
+        { ...xResult.velocity, x: vx, z: vz },
+        { x: 0, y: 0, z: vz * dt },
+        world,
+      );
+      this.position = zResult.position;
+      this.velocity = { ...zResult.velocity, x: vx, z: vz };
+      return;
+    }
+
+    // On land: direct walk; stop instantly when input stops.
     if (len === 0) {
       this.velocity = { ...this.velocity, x: 0, z: 0 };
       return;
     }
-    forward /= len;
-    strafe /= len;
 
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
@@ -287,9 +381,6 @@ export class Game {
     const vx = (-sin * forward + cos * strafe) * speed;
     const vz = (-cos * forward - sin * strafe) * speed;
 
-    // Horizontal movement uses the engine's axis-separated move so the player
-    // slides along walls instead of sticking to them.
-    const world = this.solidWorld();
     const xResult = moveWithCollisions(
       this.position,
       this.velocity,
@@ -335,7 +426,9 @@ export class Game {
       this.velocity = { ...this.velocity, y: JUMP_SPEED };
       this.onGround = false;
     }
-    const result = stepPhysics(this.position, this.velocity, dt, this.solidWorld());
+    const result = stepPhysics(this.position, this.velocity, dt, this.solidWorld(), {
+      rise: this.keys.has("Space"),
+    });
     this.position = result.position;
     this.velocity = result.velocity;
     this.onGround = result.onGround;
@@ -445,7 +538,20 @@ export class Game {
       this.sound.play("deny");
       return;
     }
-    this.engine.setBlock(cell.x, cell.y, cell.z, block);
+    if (this.net) {
+      const cx = Math.floor(cell.x / 16);
+      const cz = Math.floor(cell.z / 16);
+      this.net.requestEdit({
+        cx,
+        cz,
+        x: ((cell.x % 16) + 16) % 16,
+        y: cell.y,
+        z: ((cell.z % 16) + 16) % 16,
+        block,
+      });
+    } else {
+      this.engine.setBlock(cell.x, cell.y, cell.z, block);
+    }
     // T80: placing a block TAKES IT OUT OF THE PACK. Before this, the
     // hotbar was a decoration: the player could place blocks forever and
     // the count never moved. Now the count is the truth, and a player who
