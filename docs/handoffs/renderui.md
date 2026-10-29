@@ -545,3 +545,12 @@ file and their test. Reported on the board on T80.
   commit `1a9801f` on `feature/render/m1`; `npm run check` ALL GREEN 6/6
   exit 0; `npm run build` exit 0; 3 browser guards pass in real headless
   Chromium — M1
+
+## T103 — BUG — clouds sit on player's face, not in sky (2026-10-29)
+- Status: DONE (verified, not edited — fixes already landed via 7d5f020 + 3f5e4fa, ancestors of HEAD 7577f4c on feature/render/m1 / integrated/m1).
+- Root cause (T74 / PROGRESS.md 844): deck 88-100 (spawn y=90 inside it), depthTest:false (painted over world/player), scene fog 28-60 swallowed deck, 3D distance faded everything.
+- Source already has: ALTITUDE_MIN=132, MAX=156; depthTest=true; fog=false; FADE_NEAR=70 / FAR=170; horizontal fade; advance() called by renderer (renderer.ts 372) + onBeforeRender driver rebuild.
+- Verification: npm run build exit 0; e2e/clouds.spec.ts 2/2 pass; capture-clouds.spec.ts pass; vision on test-results/capture-clouds.png confirms white soft clouds in upper blue sky, crosshair/ground/HUD below, no face-level overlay.
+- No frozen-contract edit (types/constants untouched). No tests/ edited. Commit: 7577f4c (merged integrated tip, includes fix commits).
+- Skip/check: did NOT audit renderer double-count (advance called by loop + onBeforeRender); both use synchronized tick counters and result is correct — confirmed by pixel guard, not by code trace.
+2026-10-29T14:02:33+00:00 T84 renderui — crafting UI + tool icons + durability bar (build green; lint 0 on owned files; browser smoke blocked by org policy so unverified visually; commit beffdd4)

@@ -37,7 +37,7 @@ import {
 import { placementCell, raycast, type RaycastHit } from "./core/raycast.js";
 import { GameplaySession } from "./gameplay/index.js";
 import type { Activity } from "./gameplay/index.js";
-import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf } from "./render/index.js";
+import { Hud, SoundBoard, TitleScreen, WorldRenderer, blockLabel, chunkKeyOf, CraftingUI } from "./render/index.js";
 import { NetClient } from "./net/index.js";
 
 /**
@@ -96,6 +96,7 @@ const SPAWN_POSITION: Vec3 = { x: 0.5, y: 90, z: 0.5 };
 export class Game {
   private readonly renderer: WorldRenderer;
   private readonly hud: Hud;
+  private readonly craftingUI: CraftingUI;
   private readonly sound: SoundBoard;
   private readonly title: TitleScreen;
   private readonly engine: EngineBridge;
@@ -159,6 +160,11 @@ export class Game {
     this.engine = engine;
     this.renderer = new WorldRenderer(canvas);
     this.hud = new Hud();
+    this.craftingUI = new CraftingUI();
+    window.addEventListener("bf-craft-done", (e: Event) => {
+      const outcome = (e as CustomEvent).detail;
+      if (outcome && outcome.result) this.session.give(outcome.result);
+    });
     this.sound = new SoundBoard();
     this.title = new TitleScreen(document.body, (url) => this.join(url));
     this.bindInput(canvas);
@@ -732,6 +738,15 @@ export class Game {
       breakProgress: this.breakProgress(),
       breakingBlock: this.breakBlock(),
     });
+    if (this.craftingUI.isOpen()) {
+      const hit = this.pickBlock();
+      const hasBench = hit ? String(this.engine.blockAt(hit.x, hit.y, hit.z)) === "craftbench" : false;
+      this.craftingUI.open({
+        hasCraftbench: hasBench,
+        carried: this.session.carried.slots,
+        selectedSlot: this.selectedSlot,
+      });
+    }
   }
 
   /**
@@ -844,6 +859,22 @@ export class Game {
       }
       if (event.code === "KeyR") {
         this.act(true);
+        return;
+      }
+      // T84: crafting UI.
+      if (event.code === "KeyC") {
+        if (!this.craftingUI.isOpen()) {
+          const hit = this.pickBlock();
+          const hasBench = hit ? String(this.engine.blockAt(hit.x, hit.y, hit.z)) === "craftbench" : false;
+          this.craftingUI.open({
+            hasCraftbench: hasBench,
+            carried: this.session.carried.slots,
+            selectedSlot: this.selectedSlot,
+          });
+        } else {
+          this.craftingUI.close();
+        }
+        event.preventDefault();
         return;
       }
       // T83: eat what is in hand.
