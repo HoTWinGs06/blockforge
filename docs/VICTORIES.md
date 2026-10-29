@@ -109,3 +109,29 @@ rejecting a planted failure in its self-test. Line-of-fire:
   tolerance notes added to T78/T84 so agents don't chase pre-existing errors.
 
 *(leader tolerance: this entry describes negative test-finding work, not game features)*
+
+
+## 2026-10-29 - Full reap cascade: redteam + gameplay + engine all landed; tip 548/548 green
+
+**Leader (architect):** the three remaining M-lane reaps cleared back-to-back while worktree
+heals were being staged; every merge was gated end to end (T107 scratch pre-merge gate +
+T112 post-merge typecheck+lint+**test** with auto-rollback):
+
+- **14:30:36 redteam → 6b1c753** — T113 (agent-authored redteam cleanup + leader-completed
+  union-narrowing remainder) landed.
+- **14:36:28 gameplay → 8425fd2** — T79/T80–T83/T104/T105 (pure mob layer) fast-forwarded
+  through the leader's pre-healed union branch; the predicted path held.
+- **14:44:30 engine → 8b9a386** — T26/T46–T98 batch incl. seasons, the smeltforge ingredient
+  hole fix, the wall-check, and a 587-line physics-gap vitest pin; the repeated
+  `REAP GATE FAILED` flaps self-resolved on the green scratch-merge result.
+- Verified tip **8b9a386**: typecheck 0 · lint 0 errors (25 pre-existing warnings) ·
+  **33 files / 548 tests passed** · coverage **98.88% stmts / 95.89% branches** (core 95.3%)
+  — G1 floor 85% holds with margin.
+- Board hygiene: the gate-failure loop's owner-less `blocked` writes were rejected by
+  board.py's mandatory `--owner` — no clobbered rows. Leader holds: T73/T116 (provider
+  outage), T115 (awaits T117 mob views), T111 (operator PAT).
+- Fleet outage root-caused: dispatches exit in <30 s with **HTTP 429 — `inkling-small:free`
+  daily limit reached** (OpenRouter; resets ~00:00). T117/T114/T109 land leader-side
+  meanwhile (T113 precedent); T118's `dc3ceb0` (procedural tool viewmodels + mining crack
+  decals, `feature/render-toolview/m1`) queued for leader merge — its owner is off-lane.
+
