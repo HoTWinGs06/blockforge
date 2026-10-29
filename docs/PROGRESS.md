@@ -903,3 +903,46 @@ The registry is `~/.hermes/fleet/agents.json`.
 5. The live game is served from the operator's Windows machine by a watchdog;
    the repo is cloned at `C:\Users\JOEL\workspace\blockforge-play`, on
    branch `live`, tracking `origin/feature/integrated/m1`.
+
+
+## 12. The outage, the retired model, and the revival (2026-10-29)
+
+The machine went down mid-flight on 2026-10-22. When it came back two days
+later (up 1d17h at the operator's resume), the repo had actually advanced —
+the water-physics WIP (753e3af) and its fixes (902c297) had merged and T99's
+purity-scanner fix (4e8765a) had disarmed the last armed stub — but the FLEET
+was petrified. Every lane reported idle; the dispatcher sat at 0/2; the board
+still said `doing` on tasks whose workers no longer existed.
+
+The architect found the chain of causes in this order:
+
+1. The integrated tip had breakage the overnight merge carried in: an
+   unwired `swimVelocity` import broke typecheck and lint. Architect absorbed
+   it (3f49eec) so the tree is green again; the engine re-adds the import
+   WITH the wiring at T76.
+2. Every spawn hard-failed: OpenRouter retired the `:free` variant the whole
+   fleet ran on (`minimax/minimax-m3.1-flash:free`, free launch period ended
+   2026-10-22). A retired default model kills spawned agents AND standalone
+   panes identically — which is why the fleet looked dead while its repo
+   quietly advanced.
+3. The keys were fine the whole time: the OpenRouter key in `~/.hermes/.env`
+   still answers — probes: `thinkingmachines/inkling-small:free` OK (primary),
+   `thinkingmachines/inkling:free` OK, `nvidia/nemotron-3.5-lightning:free` OK;
+   paid minimax/minimax-m3.1-flash 402s (output request exceeds balance);
+   tokenrouter hangs; explabs is a Decisions API (HTTP 400 for chat).
+   `model.default` now points at inkling-small with a config backup left beside.
+
+After the flip the fleet demonstrably works: selector probes answer `OK` via
+the DEFAULT invocation path (the cron dispatcher's path), the stand-in leader
+runs `leader.py` commands under the new model, and the first spawned worker
+(testauthor on the new T102) is RUNNING. Windows-side: the G2 demo suite
+passes 28/28 in 2.4m and the operator's dev server is back at HTTP 200 via
+the desktop launcher.
+
+Board hygiene at the revival: T76 reset to `todo` for the engine lane (with
+the swimVelocity note); T11/T28 stale-`doing` rows closed as done; T102 added
+for the water/physics coverage the merge cost us; T78 claimed (this fold).
+State of the gates: typecheck 0, lint 0 errors, 26 test files green; the G1
+coverage floor is RED again at branches 83.39% because the new physics core
+is untested — exactly the hole T102 exists to close, which is also why the
+release gate (T54) stays properly blocked until then.
