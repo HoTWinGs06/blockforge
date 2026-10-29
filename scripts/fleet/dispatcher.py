@@ -90,9 +90,10 @@ def log(msg: str) -> None:
         pass
 
 
-def run(cmd: list[str], cwd: Path | None = None, timeout: int = 120) -> tuple[int, str, str]:
+def run(cmd: list[str], cwd: Path | None = None, timeout: int = 120,
+        env: dict[str, str] | None = None) -> tuple[int, str, str]:
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
@@ -402,6 +403,53 @@ def reap_completed() -> None:
         lock_fh.close()
 
 
+# ── reap gate (T107) ──────────────────────────────────────────────────────
+
+def _gate_env() -> dict[str, str]:
+    """PATH extended with the host's node install; worktree gates need node."""
+    env = dict(os.environ)
+    node_bin = str(Path.home() / ".local" / "opt" / "node" / "bin")
+    env["PATH"] = node_bin + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _reap_gate(repo: Path, wt: Path, branch: str, name: str) -> tuple[bool, str]:
+    """T107: prove the MERGE RESULT is typecheck+lint clean before it lands.
+
+    The T102 reap (7577f4c) merged a branch whose file broke typecheck and
+    lint because reaping only checked git conflict status, nothing else. This
+    builds integrated+branch in a scratch worktree (node_modules symlinked
+    from the repo), runs the gates there, and returns (ok, output). On
+    failure the canonical tree is never touched and the caller marks the
+    tasks blocked with this output as the board note.
+    """
+    scratch = repo.parent / f"reap-scratch-{name}"
+    run(["git", "-C", str(repo), "worktree", "remove", "--force", str(scratch)], timeout=120)
+    run(["git", "-C", str(repo), "worktree", "prune"], timeout=60)
+    rc, out, err = run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(scratch), INTEGRATED_BRANCH],
+        timeout=120)
+    if rc != 0:
+        return False, f"scratch worktree add failed: {(out or err).strip()}"
+    env = _gate_env()
+    link = scratch / "node_modules"
+    try:
+        if (repo / "node_modules").exists() and not link.exists():
+            link.symlink_to(repo / "node_modules", target_is_directory=True)
+        rc, out, err = run(["git", "-C", str(scratch), "merge", "--no-edit", branch], timeout=300)
+        if rc != 0:
+            return False, "merge left a conflict in scratch:\n" + (out or err).strip()
+        for label, cmd in (("typecheck", ["npm", "run", "typecheck"]),
+                           ("lint", ["npm", "run", "lint"])):
+            rc, out, err = run(cmd, cwd=scratch, timeout=900, env=env)
+            if rc != 0:
+                return False, f"{label} failed on the merge result:\n" + (out or err).strip()
+        return True, "typecheck and lint are green on the merge result"
+    finally:
+        run(["git", "-C", str(repo), "worktree", "remove", "--force", str(scratch)], timeout=180)
+        run(["git", "-C", str(repo), "worktree", "prune"], timeout=60)
+
+
 def _reap_locked() -> None:
     """The body of reap_completed, run under the reap lock."""
     tasks = board_tasks()
@@ -437,6 +485,19 @@ def _reap_locked() -> None:
         if INTEGRATED_BRANCH in (contains or ""):
             continue
         ids = ", ".join(t_["id"] for t_ in done_tasks)
+        # T107: gate the merge on typecheck+lint, proven against the MERGE
+        # RESULT in a scratch worktree. A red gate blocks the tasks (with the
+        # gate output as the note) and skips the merge; the role branch keeps
+        # its work so the fix can land without reverting anything.
+        gate_ok, gate_out = _reap_gate(REPO, wt, branch, role)
+        if not gate_ok:
+            snippet = "\n".join(gate_out.strip().splitlines()[:14])[:1200]
+            for t_ in done_tasks:
+                board_cmd("update", t_["id"], "--status", "blocked", "--notes",
+                          f"REAP GATE {role}: the merged result is not green; "
+                          f"merge SKIPPED, branch kept\n{snippet}")
+            log(f"REAP GATE FAILED {role} {branch} (tasks {ids}) - merge skipped")
+            continue
         rc, out, err = run(["git", "-C", str(REPO), "merge", "--no-edit", branch], timeout=300)
         if rc == 0:
             sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
