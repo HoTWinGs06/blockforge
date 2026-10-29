@@ -164,8 +164,9 @@ export function validateBlockEdit(
   }
 
   // The y === 0 layer is the voidstone foundation in every generated column.
-  // It is the bottom of the world; nothing may dig through it.
-  if (y === 0) {
+  // It is the bottom of the world; nothing may dig through it. Restoring the
+  // foundation with voidstone itself is permitted for real client packets.
+  if (y === 0 && block !== "voidstone") {
     return {
       ok: false,
       reason: "immutable_bedrock",

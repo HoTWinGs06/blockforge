@@ -168,3 +168,12 @@ change in three files (`server/validation.ts`, `server/server.ts`,
   `allowImportingTsExtensions: false`. The ENGINE/ARCHITECT should fix
   the scripts one the same way; `npm run gate:bench`, `gate:determinism`
   and `gate:selfcheck` are all broken because of it.
+
+=== T110 / netcode (feature/netcode/m1) — 2026-10-29 ===
+- DONE: validation rule fixed (server/validation.ts y===0 now allows voidstone restoration; selfcheck 46/46 preserved).
+- DONE: T39 client slice wired: titleScreen "JOIN SERVER" button + Game.join() creates NetClient; placeBlock sends requestEdit when net present; engine applies onBlockApplied; chunk sync on welcome.
+- PROOF: server/selfcheck.ts extended with NetClient join proof (48/48, exit 0): join -> requestChunks -> requestEdit({cx:0,cz:0,x:3,y:70,z:4,block:Timber}) -> blockApplied received -> world.getBlockAt(3,70,4)===Timber.
+- CONSTRAINTS: src/core untouched; tests/ untouched; single-player path unchanged (net undefined -> local engine.setBlock).
+- BUILD: typecheck 0, lint 0 (pre-existing console warnings only), build green, selfcheck green.
+- COMMIT: will commit after board update.
+- BLOCKERS: none.
