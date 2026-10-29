@@ -27,6 +27,8 @@ import {
   moveWithCollisions,
   stepJumpAssist,
   stepPhysics,
+  submersion,
+  swimVelocity,
   type JumpState,
   type SolidWorld,
 } from "./core/physics.js";
@@ -274,12 +276,56 @@ export class Game {
     if (this.keys.has("KeyA")) strafe -= 1;
 
     const len = Math.hypot(forward, strafe);
+    const world = this.solidWorld();
+    const wet = submersion(bodyAabb(this.position), world);
+
+    let wishX = 0;
+    let wishZ = 0;
+    if (len > 0) {
+      forward /= len;
+      strafe /= len;
+      const sin = Math.sin(this.yaw);
+      const cos = Math.cos(this.yaw);
+      const speed = this.keys.has("ShiftLeft") ? WALK_SPEED * SPRINT_MULTIPLIER : WALK_SPEED;
+      wishX = (-sin * forward + cos * strafe) * speed;
+      wishZ = (-cos * forward - sin * strafe) * speed;
+    }
+
+    if (wet > 0) {
+      // In water: coasting + stroke via the pure swim function.
+      const swimRes = swimVelocity(
+        this.position,
+        { x: this.velocity.x, y: 0, z: this.velocity.z },
+        wishX,
+        wishZ,
+        dt,
+        world,
+      );
+      const vx = swimRes.x;
+      const vz = swimRes.z;
+      const xResult = moveWithCollisions(
+        this.position,
+        this.velocity,
+        { x: vx * dt, y: 0, z: 0 },
+        world,
+      );
+      this.position = xResult.position;
+      const zResult = moveWithCollisions(
+        this.position,
+        { ...xResult.velocity, x: vx, z: vz },
+        { x: 0, y: 0, z: vz * dt },
+        world,
+      );
+      this.position = zResult.position;
+      this.velocity = { ...zResult.velocity, x: vx, z: vz };
+      return;
+    }
+
+    // On land: direct walk; stop instantly when input stops.
     if (len === 0) {
       this.velocity = { ...this.velocity, x: 0, z: 0 };
       return;
     }
-    forward /= len;
-    strafe /= len;
 
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
@@ -287,9 +333,6 @@ export class Game {
     const vx = (-sin * forward + cos * strafe) * speed;
     const vz = (-cos * forward - sin * strafe) * speed;
 
-    // Horizontal movement uses the engine's axis-separated move so the player
-    // slides along walls instead of sticking to them.
-    const world = this.solidWorld();
     const xResult = moveWithCollisions(
       this.position,
       this.velocity,
@@ -335,7 +378,9 @@ export class Game {
       this.velocity = { ...this.velocity, y: JUMP_SPEED };
       this.onGround = false;
     }
-    const result = stepPhysics(this.position, this.velocity, dt, this.solidWorld());
+    const result = stepPhysics(this.position, this.velocity, dt, this.solidWorld(), {
+      rise: this.keys.has("Space"),
+    });
     this.position = result.position;
     this.velocity = result.velocity;
     this.onGround = result.onGround;
