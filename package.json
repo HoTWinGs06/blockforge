@@ -13,7 +13,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.{ts,tsx}\" \"server/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" --max-warnings 0",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\" --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

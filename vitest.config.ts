@@ -19,10 +19,10 @@ export default defineConfig({
         statements: 85,
       },
     },
-  },
-  bench: {
-    include: ["tests/**/*.bench.ts"],
     // G3: chunk generation + meshing must average < 16 ms per chunk.
     // The bench itself asserts the threshold; see tests/perf/chunk.bench.ts.
+    benchmark: {
+      include: ["tests/**/*.bench.ts"],
+    },
   },
 });
