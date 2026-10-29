@@ -34,16 +34,48 @@ interface DrawnDrop {
 }
 
 test.describe("T96 guard: the dropped item is drawn in the world", () => {
-  /** Start the game, get the title screen out of the way, wait for landing. */
+  /**
+   * Start the game: press play until the title screen ITSELF confirms it
+   * is out of the way, then wait for the landing.
+   *
+   * WHY THE LANDING ALONE IS NOT PROOF: gravity runs behind the title
+   * screen - step() only gates look and move - so the spawn falls and
+   * lands whether or not play was ever pressed. A full run rode exactly
+   * that loophole once: the play click was lost at cold start, the player
+   * landed unseen behind the title ("world ready", CLICK TO PLAY), and
+   * the test then spent its whole budget waiting for a drop that a game
+   * which was never started could not produce. The title's own hidden
+   * class is the honest engagement signal, and re-clicking makes the
+   * cold-start race bystander to the result.
+   */
   const play = async (page: Page): Promise<void> => {
     await page.goto("/");
     await page.waitForSelector("#blockforge-hud", { timeout: 30_000 });
     await page.waitForTimeout(1500);
-    const button = page.locator("#blockforge-title .bf-play");
-    if (await button.count()) {
-      await button.click();
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const gone = await page.evaluate(
+        () =>
+          document.querySelector("#blockforge-title")?.classList.contains("bf-hidden") ?? false,
+      );
+      if (gone) {
+        break;
+      }
+      const button = page.locator("#blockforge-title .bf-play");
+      if (await button.count()) {
+        await button.click().catch(() => undefined);
+      }
       await page.waitForTimeout(600);
     }
+
+    // Out of the way or bust: fail HERE, naming the gate, instead of
+    // stalling the whole budget on a world that cannot act.
+    const started = await page.evaluate(
+      () =>
+        document.querySelector("#blockforge-title")?.classList.contains("bf-hidden") ?? false,
+    );
+    expect(started, "the title screen must hide once play is pressed").toBe(true);
+
     // The player SPAWNS IN THE AIR and falls, so wait for the landing.
     await page.waitForFunction(
       () => {
@@ -52,7 +84,8 @@ test.describe("T96 guard: the dropped item is drawn in the world", () => {
         ).__blockforge;
         return handle?.state().onGround === true;
       },
-      { timeout: 30_000 },
+      undefined,
+      { timeout: 60_000 },
     );
   };
 
@@ -328,16 +361,16 @@ test.describe("T96 guard: the dropped item is drawn in the world", () => {
       },
       { timeout: 90_000 },
     );
-    await page.evaluate(() => {
-      const handle = (
-        window as unknown as { __blockforge?: { setBreaking(h: boolean): void } }
-      ).__blockforge;
-      handle?.setBreaking(false);
-    });
-    // Let the item settle on the ground before the frame is sampled.
-    await page.waitForTimeout(800);
-
-    // The drop's screen box, and the frame around it.
+    // The screen box is read in the SAME page callback that lets the hold
+    // go - one round trip, so the drop is sampled in its very first ticks
+    // of life, under the crosshair, before the sweep can take it.
+    //
+    // There is no settle wait here, and that is the whole point: an item
+    // is collected after PICKUP_DELAY_TICKS (10 ticks, half a second of
+    // game time), it SETTLES in the same ten ticks, and the player broke
+    // the block UNDER THEIR OWN FEET - so the moment the drop finishes
+    // settling IS the moment it disappears. Waiting for it to lie still
+    // waits for a world where it no longer is.
     const box = await page.evaluate(() => {
       const handle = (
         window as unknown as {
@@ -345,14 +378,19 @@ test.describe("T96 guard: the dropped item is drawn in the world", () => {
             drawnDrops(): readonly {
               screen: { x: number; y: number; width: number; height: number } | null;
             }[];
+            setBreaking(h: boolean): void;
           };
         }
       ).__blockforge;
-      const drop = (handle?.drawnDrops() ?? [])[0];
-      return drop?.screen ?? null;
+      const screen = (handle?.drawnDrops() ?? [])[0]?.screen ?? null;
+      handle?.setBreaking(false);
+      return screen;
     });
     expect(box, "the drop must be on the screen, in front of the camera").not.toBeNull();
 
+    // The frame is taken in the drop's first ticks too: the drop was drawn
+    // at tick ~0, its box was read at tick ~1, and the sweep lands at
+    // tick 10 - so the region the assertion probes still holds the drop.
     const frame = await page.screenshot();
     const sample = await page.evaluate(
       async (arg: {
