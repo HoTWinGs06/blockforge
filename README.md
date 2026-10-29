@@ -16,6 +16,8 @@ generated procedurally in a canvas at runtime, and every sound is synthesised wi
 **Milestone 1 (M1 — Engine) is in progress.** This section is the honest one: what works
 *right now*, and what does not. Nothing below is aspirational.
 
+![G2 headless smoke test — the renderer loads, the world generates, the HUD shows, a block breaks and is re-placed, and the console carries zero errors or warnings for the full session.](docs/screenshot-g2.png)
+
 ### Implemented
 
 - **Seeded, deterministic world generation.** A chunked 16 × 16 × 256 voxel world with terrain
