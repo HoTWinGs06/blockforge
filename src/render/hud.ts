@@ -11,6 +11,7 @@
  */
 
 import { BlockId } from "../core/types.js";
+import { isToolId, getToolIcon, toolSpec } from "./toolIcons.js";
 
 export interface HudHotbarSlot {
   readonly id: string;
@@ -169,6 +170,19 @@ const CSS = `
   position: absolute; left: 3px; top: 1px; font-size: 9px;
   color: rgba(255,255,255,.35);
 }
+#blockforge-hud .bf-slot .bf-icon {
+  width: 26px; height: 26px; image-rendering: pixelated; display: block;
+}
+#blockforge-hud .bf-slot .bf-label {
+  position: absolute; bottom: 3px; left: 0; width: 100%; text-align: center;
+  font-size: 7px; color: rgba(255,255,255,.75); letter-spacing: .2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#blockforge-hud .bf-slot .bf-dur {
+  position: absolute; bottom: 0; left: 3px; right: 3px; height: 3px;
+  background: rgba(0,0,0,.55); border-radius: 1px; overflow: hidden;
+}
+#blockforge-hud .bf-slot .bf-dur > i { display: block; height: 100%; border-radius: 1px; }
 #blockforge-hud .bf-hotbar-label {
   position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
   font-size: 12px; opacity: .8; white-space: nowrap;
@@ -315,7 +329,24 @@ export class Hud {
         const el = document.createElement("div");
         el.className = "bf-slot" + (index === state.selectedSlot ? " bf-selected" : "");
         el.dataset["slot"] = String(index);
-        el.textContent = slot.id ? blockLabel(slot.id as BlockId) : "";
+
+        const isTool = slot.id ? isToolId(slot.id) : false;
+
+        // Icon for tools; plain label for blocks.
+        if (isTool && slot.id) {
+          const icon = document.createElement("img");
+          icon.className = "bf-icon";
+          icon.alt = "";
+          const cv = getToolIcon(slot.id);
+          icon.src = cv.toDataURL();
+          el.appendChild(icon);
+          const lbl = document.createElement("span");
+          lbl.className = "bf-label";
+          lbl.textContent = blockLabel(slot.id as BlockId);
+          el.appendChild(lbl);
+        } else {
+          el.textContent = slot.id ? blockLabel(slot.id as BlockId) : "";
+        }
 
         const key = document.createElement("span");
         key.className = "bf-key";
@@ -328,6 +359,22 @@ export class Hud {
           count.textContent = String(slot.count);
           el.appendChild(count);
         }
+
+        // Durability bar when the item carries a durability number (tools only, now).
+        if (slot.durability !== undefined && slot.durability !== null) {
+          const durWrap = document.createElement("div");
+          durWrap.className = "bf-dur";
+          const maxDur = toolSpec(slot.id)?.durability ?? 130;
+          const pct = Math.max(0, Math.min(100, (slot.durability / maxDur) * 100));
+          const bar = document.createElement("i");
+          bar.style.width = `${pct}%`;
+          if (pct < 20) bar.style.background = "#d9534a"; // critical: red
+          else if (pct < 50) bar.style.background = "#c99a4a"; // warning: amber
+          else bar.style.background = "#5cb85c"; // fine: green
+          durWrap.appendChild(bar);
+          el.appendChild(durWrap);
+        }
+
         return el;
       }),
     );
