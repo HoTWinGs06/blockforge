@@ -75,9 +75,37 @@
 - Lane offers placed one per lane (one-by-one rule): T84 → renderui (crafting UI unparked, data side done at afbebb0), T30 → redteam (cycle 2 unparked — attack water/swim, crafting, survival, server validation), T77 → engine (day/night), T109 → testauthor (pin server/validation.ts anti-cheat rules in vitest — closes the tests-cover-server gap found by recon), T110 → netcode (the game joins a served world — wires the T39 client slice; PROTOCOL_VERSION stays 1), T111 → release (public repo HoTWinGs06/blockforge, the one T54 leftover).
 - Dispatcher verified filling: engine T77 + netcode T110 RUNNING (0/2 → 2/2 within one cron cycle), four further tasks queued.
 
+
 ### 2026-10-29 — T79 M3 mobs (gameplay) — pure mob layer done, f671856
 - Mob layer (spawnMob, updateMobAI, mobDropTable + MOB_DROP_ITEM, stepToward) in src/gameplay/mobs.ts — deterministic from (mob.id, tick) via createRng, no shared-rng order dependency, no Math.random/Date.now.
 - Original names preserved (grazer, flutter, shellback, lurker, snarler); MOB_MAX_HEALTH / MOB_SPEED / AI_TIMER_DEFAULT / DEATH_TIMER_MAX gameplay-owned.
 - FOOD (survival.ts) extended with original mob-meat ids; MOB_DAMAGE already present; drop table wires to item chain.
 - Verification: npm typecheck 0 src errors, eslint 0, build exit 0; node determinism self-check (same tick => identical state); Milo posted (msg 1565368312940994701).
 - Skipped: session tick-loop wiring (engine/main area), A* pathfinding (stepToward affordable), visual mesh / spawn-rate biomechanics (render/world layers).
+
+## 2026-10-29 - Fleet gate hole root-caused and eliminated (T112)
+
+**Leader (architect):** the integrated tip was red on typecheck/lint despite T107's reap gate
+rejecting a planted failure in its self-test. Line-of-fire:
+
+- Bisect pinned the redness to the T30 cycle-2 merge `beffdd4` (born red; 18 typecheck +
+  9 lint errors, all inside `tests/redteam/`), yet its reap had NO gate line in the log.
+- Root cause: the crontab was running `/home/hermes/workspace/fleet-dispatcher.py` - a stale
+  pre-T107 copy (22,384 bytes, no `_reap_gate`, no T107 marker) that reaped every cron pass
+  ungated. The committed gated dispatcher lives at `scripts/fleet/dispatcher.py`.
+- Fixes, committed `fec9819`:
+  1. crontab pinned to the committed dispatcher path;
+  2. the stale file replaced by a symlink to it (old copy kept as
+     `fleet-dispatcher.py.pre-gate.bak`);
+  3. the committed dispatcher now enforces green POST-merge too: after every reap it runs
+     typecheck+lint on the landed tree and auto-`git reset --hard`es back to the pre-merge
+     tip, blocking the tasks, if anything is red.
+- Post-fix behavior confirmed live: engine's T78 reap attempts are now correctly gated
+  (`REAP GATE FAILED ... merge skipped`) and will auto-merge once the tip heals via T113.
+- Side-verification: the ungated render merge `e3697d2` (T84 crafting UI +
+  procedural tool icons, 451 insertions) turned out clean - zero NEW errors vs base; all
+  remaining redness stays confined to `tests/redteam/` (T113's scope).
+- Board: T112 recorded done (this fix); T113 filed for redteam with the exact file/line list;
+  tolerance notes added to T78/T84 so agents don't chase pre-existing errors.
+
+*(leader tolerance: this entry describes negative test-finding work, not game features)*

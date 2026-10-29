@@ -1198,3 +1198,42 @@ canonical-chunk hash, and neither stores a hash on disk.
   * Render-side sun/moon/sky/light colours NOT verified by me — hermes-win owns; interface doc is complete but actual pixel output depends on their commit.
   * Gameplay tick-loop sync (world.advanceTicks) NOT applied — one-line hook documented for gameplay agent; if they miss it, World.tick stays at 0 and day/night won't move (detectable in render by reading tick).
   * Selfcheck 1 failure not resolved — pre-existing physics discrepancy; not in my area; not hidden.
+
+---
+
+## T78 — M2/RENDER-UI + ENGINE: seasons (engine, feature/engine/m1)
+- Status: done. Board updated; owner engine; commit below.
+- What landed (ENGINE — visual-only design, frozen contract):
+  * Verified frozen season contract already present in src/core/constants.ts (TICKS_PER_SEASON=57600, SEASONS=["thaw","green","harvest","frost"], seasonAt pure, dayPhaseAt pure) and src/core/types.ts (Season type, WorldSnapshot carries season+tick).
+  * Verified src/core/world.ts: World.tick (public, pure) + advanceTicks(ticks) + snapshot() writes season=seasonAt(this.tick) + tick + chunk data; fromSnapshot restores tick exactly (season derived from tick, not independently stored — correct per contract, preserves saved season on reload).
+  * Determinism preserved (visual-only, terrain unchanged): same seed => identical world hash at tick=0 and tick=57600 (verified by script: seed 999 => hash f28c8267 at both ticks); world is pure function of seed alone, season does not enter chunk generation.
+  * Purity verified: zero Date.now / performance.now / Math.random executions in src/core/ (grep across *.ts — only doc comments); no bad imports from src/core/ to engine/render/net/gameplay.
+  * Added scripts/verify_seasons.mjs — pure arithmetic + World snapshot roundtrip + determinism proof, read back (node executed, exits 0); reports seasonAt over 0/57600/115200/172800 and wrap at 4*57600; reports preserved tick (0 thaw, 57600 green); reports identical hash; reports 0 clock calls.
+  * No edit to src/core/types.ts or constants.ts (contract frozen — names/numbers untouched); no rename of Season/TICKS_PER_SEASON/seasonAt/WorldSnapshot fields.
+  * No edit to src/render/*.ts — visual palette/foliage/ground-cover drawing is RENDER/UI's row (design agreed, interface documented below; they import seasonAt and read world.tick); ownership boundary respected.
+  * No edit to src/gameplay/session.ts tick-loop — documented hook (add world.advanceTicks(1) inside tick loop) for gameplay agent, same pattern as T77.
+  * No edit to tests/ (testauthor owns); coverage floor not moved (contract already covered at 84.76 branches by prior gate; new script is outside tests/); no dependency added.
+- Interface agreement (before any code — coordinated, as brief required):
+  * ENGINE provides: world.tick + world.advanceTicks(n) (pure) + seasonAt(tick) / dayPhaseAt(tick) (constants.ts). World.snapshot()/fromSnapshot() preserve tick so season is preserved on save/load.
+  * RENDER/UI (hermes-win, owned separately) must: import `{ seasonAt, SEASONS, TICKS_PER_SEASON } from "../core/constants.js"`; read `world.tick` (via session/renderer); apply palette/foliage/ground-cover colour/filter by `seasonAt(world.tick)`. Must NOT call Date.now(); tick is the only clock.
+  * GAMEPLAY/SESSION (owned by gameplay role) must: inside tick loop (session.ts ~line 220-223, where this.tick += 1), add `this.solidWorld().advanceTicks(1)` so World.tick stays in sync with gameplay clock. One line; pure.
+- Verification (read back, not assumed):
+  * `npm run typecheck` — exit 0 for source (pre-existing errors in tests/redteam/m1-serialisation-corruption.test.ts unrelated; not caused by this change).
+  * `npm run lint` — 0 errors from this change; only pre-existing 36 errors (redteam/tests) + 1 warning (no-console in verify scripts — allowed for scripts); verify_seasons.mjs clean.
+  * `node scripts/verify_seasons.mjs` — PASS (see above). Hash read back: f28c8267 (seed 999, tick 0 and 57600); seasonAt values read back; snapshot roundtrip read back.
+  * `npm run gate:determinism`: G6 already green (2410e35 merged; identical hashes across fresh processes); this task does not change world generation so G6 remains satisfied.
+  * `npm run gate:bench`: G3 already green (avg ~4.48 ms/chunk); this task touches no chunk generation or meshing.
+  * Purity: grep `Date\.now|performance\.now|Math\.random` src/core/*.ts → only doc comments (confirmed in verify script; prior redteam gate verified zero executions).
+- What was NOT done (lazy / ownership / scope):
+  * No terrain-generation change — season does not reshape chunks (design explicitly rejected; would require (seed,season) pair in determinism suite and new world hashes). Visual-only.
+  * No render/ui pixel output verified — hermes-win owns; interface doc complete.
+  * No gameplay tick-loop edit — one-line hook documented for gameplay agent; if they miss it, World.tick stays 0 and visual season won't advance (detectable by render reading tick).
+  * No new dependencies; no new abstractions; no config/options; no "for later" code.
+  * No docs/PROGRESS.md / docs/VICTORIES.md edited (architect owns); win not claimed to VICTORIES.md — will be folded by architect from board note + this file.
+- Commit: feature/engine/m1; SHA recorded after `git commit`; downstream (renderui / gameplay / testauthor) start from merged SHA.
+- Depends on: T77 done (7410e35 — frozen contract verified, day/night pure, interface doc + render/gameplay hooks documented; seasonAt already pure, World.snapshot already writes season); T76 done (1e270b5) — water physics intact; frozen contract verified.
+- Blocks: T69-T75 (render visual cycles — now have season interface), T73 (underwater view — unblocked), T88 (testauthor — contract pinned, they can assert seasonAt pure / snapshot preserves tick / determinism holds across tick changes).
+- Risk / skipped verification (pony tail):
+  * Render-side palette/foliage/ground-cover pixel output NOT verified — hermes-win owns; interface complete but actual colour filter depends on their commit.
+  * Gameplay tick-loop sync (world.advanceTicks) NOT applied — documented; if missed, season visual stays at thaw.
+  * No actual snow/ice block replacement in frost, no leaf-change to harvest — design explicitly visual-only; if operator later wants terrain-reshaping seasons, that's a separate contract change (world becomes f(seed,state,season), hashes per season, determinism pins (seed,season)), not a side-effect of this task.
