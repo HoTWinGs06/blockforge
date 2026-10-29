@@ -12,8 +12,23 @@
  * as "./gameplay/index.js" from the app shell.
  */
 
-export { GameplaySession, TICKS_PER_SECOND } from "./session.js";
-export type { BreakOutcome, DroppedItemView, EatOutcome } from "./session.js";
+export {
+  GameplaySession,
+  TICKS_PER_SECOND,
+  MOB_SPAWN_INTERVAL_TICKS,
+  MAX_MOBS,
+  MOB_SPAWN_RING_RADIUS,
+  MOB_MIN_SPAWN_DISTANCE,
+  MOB_SPAWN_SEARCH_TOP,
+  MOB_SPAWN_SEARCH_BOTTOM,
+  MOB_ATTACK_COOLDOWN_TICKS,
+} from "./session.js";
+export type {
+  BreakOutcome,
+  DroppedItemView,
+  EatOutcome,
+  MobView,
+} from "./session.js";
 export {
   advanceSurvival,
   createSurvival,
